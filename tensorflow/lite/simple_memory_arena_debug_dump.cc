@@ -18,6 +18,7 @@ limitations under the License.
 #include <queue>
 #include <string>
 #include <vector>
+#include <limits>
 
 #include "tensorflow/lite/simple_memory_arena.h"
 
