@@ -18,6 +18,7 @@ limitations under the License.
 #include <stddef.h>
 #include <string.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -45,8 +46,9 @@ limitations under the License.
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"  // from @llvm-project
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"  // from @llvm-project
-#include "mlir/Dialect/Linalg/IR/LinalgTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Linalg/IR/Linalg.h"  // from @llvm-project
 #include "mlir/Dialect/SCF/SCF.h"  // from @llvm-project
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/Dialect/Vector/VectorOps.h"  // from @llvm-project
@@ -148,9 +150,10 @@ namespace {
 // Hopefully this will all go away at some point in favor of a better
 // integration.
 void LoadMLIRDialects(mlir::MLIRContext& context) {
-  context.loadDialect<mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
-                      mlir::vector::VectorDialect, mlir::StandardOpsDialect,
-                      mlir::AffineDialect>();
+  context
+      .loadDialect<mlir::arith::ArithmeticDialect, mlir::linalg::LinalgDialect,
+                   mlir::scf::SCFDialect, mlir::vector::VectorDialect,
+                   mlir::StandardOpsDialect, mlir::AffineDialect>();
 }
 
 }  // namespace
@@ -204,8 +207,8 @@ namespace cpu {
 using BufferInfo = cpu_function_runtime::BufferInfo;
 
 CpuAotCompilationOptions::CpuAotCompilationOptions(
-    string triple, string cpu_name, string features, string entry_point_name,
-    RelocationModel relocation_model)
+    std::string triple, std::string cpu_name, std::string features,
+    std::string entry_point_name, RelocationModel relocation_model)
     : triple_(std::move(triple)),
       cpu_name_(std::move(cpu_name)),
       features_(std::move(features)),
@@ -397,10 +400,19 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
     return false;
   };
   pipeline.AddPass<ConvolutionGroupConverter>(
-      cost_model,
+      /*should_expand=*/[](HloInstruction* conv) { return true; }, cost_model,
       /*convert_batch_groups_only=*/true);
+  auto feature_group_should_expand = [](HloInstruction* conv) {
+    switch (conv->shape().element_type()) {
+      case F16:
+      case F32:
+        return false;
+      default:
+        return true;
+    }
+  };
   pipeline.AddPass<ConvolutionGroupConverter>(
-      cost_model,
+      feature_group_should_expand, cost_model,
       /*convert_batch_groups_only=*/false);
   pipeline.AddPass<BatchNormExpander>(
       /*rewrite_training_op=*/true,
@@ -424,13 +436,18 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
         /*layout_sensitive=*/false,
         /*allow_mixed_precision=*/false);
 
-    pipeline.AddPass<TreeReductionRewriter>();
     AlgebraicSimplifierOptions options;
     options.set_enable_dot_strength_reduction(false);
+    // TODO(b/209827141): XLA:CPU doesn't propagate NaN through min/max, but
+    // other platforms do, so it should be changed.
+    options.set_minmax_propagate_nan(false);
     pipeline.AddPass<AlgebraicSimplifier>(options);
     pipeline.AddPass<SortSimplifier>();
     pipeline.AddPass<HloDCE>();
     pipeline.AddPass<GatherExpander>(GatherExpander::kEliminateSimpleGathers);
+
+    // Needs to happen after algebraic simplifier.
+    pipeline.AddPass<TreeReductionRewriter>();
 
     // BatchNormExpander can create zero-sized ops, so zero-sized HLO
     // elimination has to come after that pass.
@@ -472,8 +489,6 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   pipeline.AddPass<CpuLayoutAssignment>(
       module->mutable_entry_computation_layout(), target_machine_features);
 
-  pipeline.AddPass<CpuInstructionFusion>();
-
   return pipeline.Run(module).status();
 }
 
@@ -481,12 +496,15 @@ Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     HloModule* module, bool is_aot_compile,
     LLVMTargetMachineFeatures* target_machine_features) {
   HloPassPipeline pipeline("HLO passes after layout assignment");
-  // After layout assignment, use a layout-sensitive verifier.
 
+  // After layout assignment, use a layout-sensitive verifier.
   pipeline.AddPass<HloPassPipeline>("after layout assignment")
       .AddInvariantCheckerDebug<HloVerifier>(
           /*layout_sensitive=*/true,
           /*allow_mixed_precision=*/false);
+
+  // Add a fusion pass now that layout assignment is done.
+  pipeline.AddPass<CpuInstructionFusion>();
 
   // The LayoutAssignment pass may leave behind kCopy instructions which are
   // duplicate or NOPs, so remove them with algebraic simplification and CSE.
@@ -500,6 +518,9 @@ Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     AlgebraicSimplifierOptions options;
     options.set_is_layout_sensitive(true);
     options.set_enable_dot_strength_reduction(false);
+    // TODO(b/209827141): XLA:CPU doesn't propagate NaN through min/max, but
+    // other platforms do, so it should be changed.
+    options.set_minmax_propagate_nan(false);
     pipeline.AddPass<AlgebraicSimplifier>(options);
     pipeline.AddPass<HloDCE>();
     pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true);
@@ -549,7 +570,7 @@ namespace {
 
 // Align buffers to 16-byte boundaries.
 int64_t memory_alignment(LogicalBuffer::Color) {
-  return cpu_function_runtime::kMinAlign;
+  return cpu_function_runtime::MinAlign();
 }
 
 llvm::TargetOptions CompilerTargetOptions(
@@ -838,23 +859,24 @@ StatusOr<std::unique_ptr<Executable>> CpuCompiler::RunBackend(
                 schedule.sequence(embedded_computation).instructions())
             .status());
   }
-  string function_name_prefix = entry_computation->name().empty()
-                                    ? "__compute"
-                                    : entry_computation->name();
+  std::string function_name_prefix = entry_computation->name().empty()
+                                         ? "__compute"
+                                         : entry_computation->name();
   TF_ASSIGN_OR_RETURN(llvm::Function * entry_function,
                       ir_emitter.EmitComputation(
                           entry_computation, function_name_prefix,
                           /*is_top_level_computation=*/true,
                           schedule.sequence(entry_computation).instructions()));
 
-  string function_name = [&]() {
+  std::string function_name = [&]() {
     llvm::SmallVector<char, 40> function_name_vector;
     llvm::Mangler::getNameWithPrefix(
         function_name_vector, entry_function->getName(), (*jit)->data_layout());
-    return string(function_name_vector.begin(), function_name_vector.end());
+    return std::string(function_name_vector.begin(),
+                       function_name_vector.end());
   }();
 
-  string ir_module_string;
+  std::string ir_module_string;
   if (embed_ir_in_executable) {
     ir_module_string = llvm_ir::DumpModuleToString(*llvm_module);
   }
@@ -1063,7 +1085,7 @@ CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
                   schedule.sequence(embedded_computation).instructions())
               .status());
     }
-    const string& entry_point_name = options.entry_point_name();
+    const std::string& entry_point_name = options.entry_point_name();
     TF_ASSIGN_OR_RETURN(llvm::Function * entry_function,
                         ir_emitter.EmitComputation(
                             computation, entry_point_name,

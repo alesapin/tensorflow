@@ -75,7 +75,8 @@ class InstructionListVisitor : public DfsHloVisitorWithDefault {
   // The full set of instructions found (may be duplicates, e.g., kParameter).
   std::vector<const HloInstruction*> instructions_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(InstructionListVisitor);
+  InstructionListVisitor(const InstructionListVisitor&) = delete;
+  InstructionListVisitor& operator=(const InstructionListVisitor&) = delete;
 };
 
 const std::vector<const HloInstruction*> GetInstructions(HloInstruction* root) {
@@ -92,6 +93,17 @@ class BufferAssignmentTest : public HloTestBase {
                                                         int64_t alignment = 1) {
     return BufferAssigner::Run(
                module, absl::make_unique<DependencyHloOrdering>(module),
+               backend().compiler()->BufferSizeBytesFunction(),
+               [alignment](LogicalBuffer::Color) { return alignment; },
+               /*allocate_buffers_for_constants=*/true)
+        .ConsumeValueOrDie();
+  }
+
+  std::unique_ptr<BufferAssignment> RunBufferAssignmentWithSequentialOrdering(
+      HloModule* module, int64_t alignment = 1) {
+    return BufferAssigner::Run(
+               module,
+               absl::make_unique<SequentialHloOrdering>(module->schedule()),
                backend().compiler()->BufferSizeBytesFunction(),
                [alignment](LogicalBuffer::Color) { return alignment; },
                /*allocate_buffers_for_constants=*/true)
@@ -161,7 +173,8 @@ class BufferAssignmentTest : public HloTestBase {
   }
 
   // Builds an x+1.0 computation to use in a Map.
-  std::unique_ptr<HloComputation> BuildMapComputationPlus1(const string& name) {
+  std::unique_ptr<HloComputation> BuildMapComputationPlus1(
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto param =
         builder.AddInstruction(HloInstruction::CreateParameter(0, r0f32_, "x"));
@@ -172,7 +185,8 @@ class BufferAssignmentTest : public HloTestBase {
     return builder.Build();
   }
 
-  std::unique_ptr<HloComputation> BuildReduceComputation(const string& name) {
+  std::unique_ptr<HloComputation> BuildReduceComputation(
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto param =
         builder.AddInstruction(HloInstruction::CreateParameter(0, r0f32_, "x"));
@@ -191,7 +205,7 @@ class BufferAssignmentTest : public HloTestBase {
   //   param[(s32,f32[4])] --- get-tuple-element[0] --- less-than
   //
   std::unique_ptr<HloComputation> BuildWhileConditionComputation(
-      const string& name) {
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto const4 = builder.AddInstruction(
         HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(4)));
@@ -217,7 +231,7 @@ class BufferAssignmentTest : public HloTestBase {
   //   const1[s32] -----------------------------------------/
   //
   std::unique_ptr<HloComputation> BuildWhileBodyComputation(
-      const string& name) {
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto const1 = builder.AddInstruction(
         HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(1)));
@@ -238,7 +252,7 @@ class BufferAssignmentTest : public HloTestBase {
   }
 
   std::unique_ptr<HloComputation> BuildR0F32UnaryOpComputation(
-      HloOpcode opcode, const string& name) {
+      HloOpcode opcode, const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto param =
         builder.AddInstruction(HloInstruction::CreateParameter(0, r0f32_, "x"));
@@ -1965,6 +1979,49 @@ TEST_F(BufferAssignmentTest, PeakBuffers) {
   EXPECT_THAT(peak_instructions, UnorderedElementsAre(rev, neg, concat));
 }
 
+TEST_F(BufferAssignmentTest, AliasedBuffersShouldntCoexistInPeakBuffers) {
+  std::string hlo_text = R"(
+HloModule test_module, is_scheduled=true
+
+cond {
+  param = (s32[], s32[]) parameter(0)
+  ROOT constant = pred[] constant(true)
+}
+
+body {
+  param.0 = (s32[], s32[]) parameter(0)
+  gte = s32[] get-tuple-element(param.0), index=0
+  add = s32[] add(gte, gte)
+  ROOT tuple = (s32[], s32[]) tuple(add, add)
+}
+
+ENTRY test_module {
+  param.3 = s32[] parameter(0)
+  copy = s32[] copy(param.3)
+  tuple = (s32[], s32[]) tuple(copy, copy)
+  while = (s32[], s32[]) while(tuple), condition=cond, body=body
+  gte = s32[] get-tuple-element(while), index=0
+  ROOT negate = s32[] negate(gte)
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo_text));
+  auto assignment = RunBufferAssignmentWithSequentialOrdering(module.get());
+  const BufferAllocation& buffer =
+      GetTopLevelAllocation(*assignment, FindInstruction(module.get(), "copy"));
+  const std::vector<const HloValue*>& peak_buffers =
+      buffer.PeakMemoryLogicalBuffers();
+
+  // Since the same aliased buffer (copy) is passed into while, we expect the
+  // number of peak array buffers to be one.
+  int num_peak_buffers = 0;
+  for (const HloValue* peak_buffer : peak_buffers) {
+    if (peak_buffer->shape().IsArray()) {
+      ++num_peak_buffers;
+    }
+  }
+  EXPECT_EQ(num_peak_buffers, 1);
+}
+
 TEST_F(BufferAssignmentTest, InPlaceBuffer) {
   const char* hlo_text = R"(
 HloModule Module
@@ -2066,7 +2123,7 @@ ENTRY main {
 class WhileBufferAssignmentTest : public HloTestBase {
  protected:
   std::unique_ptr<HloComputation> BuildWhileConditionComputation(
-      const string& name) {
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     builder.AddInstruction(
         HloInstruction::CreateParameter(0, loop_state_shape_, "loop_state"));
@@ -2080,7 +2137,7 @@ class WhileBufferAssignmentTest : public HloTestBase {
   }
 
   std::unique_ptr<HloComputation> BuildWhileBodyComputation(
-      const string& name) {
+      const std::string& name) {
     auto builder = HloComputation::Builder(name);
     auto loop_state = builder.AddInstruction(
         HloInstruction::CreateParameter(0, loop_state_shape_, "loop_state"));
@@ -2383,7 +2440,7 @@ TEST_F(WhileBufferAssignmentTest, ColocatedBuffers) {
       HloInstruction::CreateWhile(r0s32, cond1, body1, while0));
 
   auto zero = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(0)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
   auto add = builder.AddInstruction(
       HloInstruction::CreateBinary(r0s32, HloOpcode::kAdd, zero, zero));
   auto cond2 = module->AddEmbeddedComputation(build_cond());

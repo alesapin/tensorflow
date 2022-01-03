@@ -29,6 +29,7 @@ limitations under the License.
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"  // from @llvm-project
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
@@ -54,6 +55,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/xla/attribute_importer.h"
 #include "tensorflow/compiler/mlir/xla/transforms/passes.h"
+#include "tensorflow/compiler/mlir/xla/transforms/utils.h"
 #include "tensorflow/compiler/mlir/xla/type_to_shape.h"
 #include "tensorflow/compiler/xla/client/lib/conv_grad_size_util.h"
 #include "tensorflow/compiler/xla/client/padding.h"
@@ -83,22 +85,6 @@ void GetI64ArrayAttrValues(Attribute attr, SmallVectorImpl<int64_t> *values) {
   values->reserve(array_attr.getValue().size());
   for (Attribute val : array_attr.getValue())
     values->push_back(val.cast<IntegerAttr>().getValue().getSExtValue());
-}
-
-// Returns 1D 64-bit dense elements attribute with the given values.
-static DenseIntElementsAttr GetI64ElementsAttr(ArrayRef<int64_t> values,
-                                               Builder *builder) {
-  RankedTensorType ty = RankedTensorType::get(
-      {static_cast<int64_t>(values.size())}, builder->getIntegerType(64));
-  return DenseIntElementsAttr::get(ty, values);
-}
-
-// Converts an ArrayAttr to a 1D 64-bit dense elements attribute.
-static DenseIntElementsAttr GetI64ElementsAttr(ArrayAttr attr) {
-  RankedTensorType ty =
-      RankedTensorType::get(static_cast<int64_t>(attr.size()),
-                            IntegerType::get(attr.getContext(), 64));
-  return DenseIntElementsAttr::get(ty, attr.getValue());
 }
 
 // Returns 1D 32-bit dense elements attribute with the given values.
@@ -149,7 +135,7 @@ static IntegerAttr GetHLOAxisFromTFAxis(Attribute attr, int64_t rank,
   IntegerAttr intAttr = attr.dyn_cast_or_null<IntegerAttr>();
   if (auto elementAttr = attr.dyn_cast_or_null<ElementsAttr>()) {
     SmallVector<uint64_t, 1> index(elementAttr.getType().getRank(), 0);
-    intAttr = elementAttr.getValue<IntegerAttr>(index);
+    intAttr = elementAttr.getValues<IntegerAttr>()[index];
   }
 
   assert(intAttr && "Invalid attribute passed to GetHLOAxisFromTFAxis");
@@ -172,7 +158,7 @@ static llvm::Optional<int64_t> GetIntegerHLOAxisFromTFAxis(Value value,
       attrs.getType().getRank() != 0) {
     return llvm::None;
   }
-  int64_t axis = attrs.getValue<IntegerAttr>({}).getInt();
+  int64_t axis = attrs.getValues<IntegerAttr>()[0].getInt();
   return axis < 0 ? axis + rank : axis;
 }
 
@@ -219,13 +205,6 @@ tensorflow::TensorShape ToTensorShape(
     llvm::iterator_range<DenseElementsAttr::ElementIterator<T>> sizes) {
   return tensorflow::TensorShape(
       llvm::SmallVector<int64_t, num_dims>(sizes.begin(), sizes.end()));
-}
-
-// Returns int, float, or complex scalar DenseElementsAttr attribute with the
-// given element type and the value.
-static ConstOp GetScalarConstOfType(Type ty, Location loc, int64_t raw_value,
-                                    OpBuilder *builder) {
-  return builder->create<ConstOp>(loc, hlo::GetScalarOfType(ty, raw_value));
 }
 
 // Returns a limit scalar const op for the given type.
@@ -489,24 +468,6 @@ Value BatchDot(Location loc, Value lhs, bool transpose_lhs, Value rhs,
       dimension_numbers, precision_config);
 }
 
-// Builds body for reduce op by using the template binary op as the
-// reducer op.
-template <typename Op>
-static void BuildReduceBody(Type element_type, Region *body,
-                            OpBuilder *builder) {
-  OpBuilder::InsertionGuard guard(*builder);
-  Block *block = builder->createBlock(body);
-
-  // Block arguments are scalars of the given element type.
-  Type type = RankedTensorType::get(/*shape=*/{}, element_type);
-  block->addArguments({type, type});
-
-  Location loc = body->getLoc();
-  auto reducer =
-      builder->create<Op>(loc, block->getArgument(0), block->getArgument(1));
-  builder->create<ReturnOp>(loc, reducer.getResult());
-}
-
 // Builds a set of operations for applying reduction on the input value. A
 // tf.sum op is created and will be legalized to tfl ops automatically.
 static Value ApplyReduction(Location loc, Value input,
@@ -567,32 +528,33 @@ static void CreateWhile32(Location loc, int num_iterations,
 
   // Prepend a loop induction variable to the initial values.
   SmallVector<Value, 2> init_values_with_loop_iv;
+  SmallVector<Type, 2> init_types_with_loop_iv;
   init_values_with_loop_iv.reserve(value_count);
+  init_types_with_loop_iv.reserve(value_count);
+
   // The initial value for the loop induction variable is 0.
   init_values_with_loop_iv.push_back(
       builder->create<mhlo::ConstOp>(loc, builder->getI32IntegerAttr(0)));
   init_values_with_loop_iv.append(init_values.begin(), init_values.end());
 
-  // Prepare the initial tuple for the while op.
-  auto init_tuple =
-      builder->create<mhlo::TupleOp>(loc, init_values_with_loop_iv);
-  auto tuple_type = init_tuple.getType();
+  // Accumulate types of all the init values.
+  for (const auto &init_value_with_loop_iv : init_values_with_loop_iv)
+    init_types_with_loop_iv.push_back(init_value_with_loop_iv.getType());
 
   // Create the while op.
-  auto while_op = builder->create<mhlo::WhileOp>(
-      loc, tuple_type, SmallVector<Value>{init_tuple});
+  auto while_op = builder->create<mhlo::WhileOp>(loc, init_types_with_loop_iv,
+                                                 init_values_with_loop_iv);
 
   {
     OpBuilder::InsertionGuard guard(*builder);
 
-    // Build up the only block in the condition region. It should take one
-    // argument of the loop's tuple type.
+    // Build up the only block in the condition region.
     Region &condition = while_op.cond();
     Block *block = builder->createBlock(&condition);
-    BlockArgument arg = block->addArgument(tuple_type);
+    block->addArguments(init_types_with_loop_iv);
 
     // Get the loop induction variable and compare it against the upper limit.
-    auto loop_iv = builder->create<GetTupleElementOp>(loc, arg, 0);
+    auto loop_iv = block->getArgument(0);
     auto upper_limit = builder->create<mhlo::ConstOp>(
         loc, builder->getI32IntegerAttr(num_iterations));
     StringAttr compare_direction = StringAttr::get(builder->getContext(), "LT");
@@ -605,23 +567,18 @@ static void CreateWhile32(Location loc, int num_iterations,
   {
     OpBuilder::InsertionGuard guard(*builder);
 
-    // Build up the only block in the body region. It should take one
-    // argument of the loop's tuple type.
+    // Build up the only block in the body region.
     Region &body = while_op.body();
     Block *block = builder->createBlock(&body);
-    BlockArgument arg = block->addArgument(tuple_type);
+    block->addArguments(init_types_with_loop_iv);
 
-    SmallVector<Value, 4> old_values;  // From the previous iteration
     SmallVector<Value, 4> new_values;  // Generated by this iteration
-    old_values.reserve(value_count);
     new_values.reserve(value_count);
 
-    // Unpack the tuple value from the last iteration.
-    for (int i = 0; i < value_count; ++i)
-      old_values.push_back(builder->create<GetTupleElementOp>(loc, arg, i));
-
     // Feed all values excluding the loop induction variable to body_fn.
-    body_fn(loc, old_values[0], llvm::makeArrayRef(old_values).drop_front(),
+    body_fn(loc, block->getArgument(0),
+            ArrayRef<Value>(block->getArguments().begin() + 1,
+                            block->getArguments().end()),
             &new_values, builder);
 
     // Increment the loop induction variable by one.
@@ -629,20 +586,17 @@ static void CreateWhile32(Location loc, int num_iterations,
         builder->create<mhlo::ConstOp>(loc, builder->getI32IntegerAttr(1));
     auto scalar_broadcast_dims = GetI64ElementsAttr({}, builder);
     auto plus_one = builder->create<chlo::BroadcastAddOp>(
-        loc, old_values[0], one, scalar_broadcast_dims);
+        loc, block->getArgument(0), one, scalar_broadcast_dims);
     // Prepend with the updated loop induction variable.
     new_values.insert(new_values.begin(), plus_one);
 
-    Value updated_tuple = builder->create<mhlo::TupleOp>(loc, new_values);
-
-    builder->create<mhlo::ReturnOp>(loc, updated_tuple);
+    builder->create<mhlo::ReturnOp>(loc, new_values);
   }
 
   // TODO(jpienaar): Support multi-operand while op.
   final_values->reserve(init_values.size());
   for (int i = 0, e = init_values.size(); i < e; ++i)
-    final_values->push_back(
-        builder->create<GetTupleElementOp>(loc, while_op.getResult(0), i + 1));
+    final_values->push_back(while_op.getResult(i + 1));
 }
 
 //===----------------------------------------------------------------------===//
@@ -927,7 +881,7 @@ static bool CanBeTranslatedToDynamicSlice(Value input, Value start_indices,
 
   for (int64_t i = 0; i < input_rank; ++i) {
     int64_t input_size = input_shape[i];
-    int64_t slice_size = slice_sizes.getValue<IntegerAttr>(i).getInt();
+    int64_t slice_size = slice_sizes.getValues<IntegerAttr>()[i].getInt();
     // A slice_size of -1 means "all elements from start_index to the end".
     // In order to support these semantics, we need to know both the start index
     // and the shape of the input dimension.
@@ -956,8 +910,8 @@ static DenseIntElementsAttr TFSliceSizes2HLOSliceSizes(
   for (int64_t i = 0; i < input_rank; ++i) {
     int64_t input_size = input_shape[i];
     int64_t start_index =
-        constant_start_indices.getValue<IntegerAttr>(i).getInt();
-    int64_t slice_size = slice_sizes.getValue<IntegerAttr>(i).getInt();
+        constant_start_indices.getValues<IntegerAttr>()[i].getInt();
+    int64_t slice_size = slice_sizes.getValues<IntegerAttr>()[i].getInt();
     normalized_sizes.push_back(slice_size == -1 ? input_size - start_index
                                                 : slice_size);
   }
@@ -997,6 +951,30 @@ static void BuildSortComparisonBody(llvm::ArrayRef<Type> element_types,
       type_attr);
 
   builder->create<mhlo::ReturnOp>(loc, compare);
+}
+
+// Creates a mhlo.sort op.
+static mhlo::SortOp CreateSortOp(PatternRewriter *rewriter, const Location &loc,
+                                 const llvm::ArrayRef<Value> &operands,
+                                 const llvm::ArrayRef<Type> &element_types,
+                                 int64_t dimension, bool is_stable,
+                                 const std::string &direction) {
+  assert(!operands.empty() && "No operands to sort");
+  // Create the sort op.
+  auto sort_op =
+      rewriter->create<mhlo::SortOp>(loc, operands, dimension, is_stable);
+
+  // Use TOTALORDER comparison type instead of the default comparison if the
+  // element type is of type float.
+  llvm::Optional<StringRef> compare_type = llvm::None;
+  for (auto const &element_type : element_types)
+    if (element_type.isa<FloatType>()) {
+      compare_type.emplace("TOTALORDER");
+      break;
+    }
+  BuildSortComparisonBody(element_types, direction, compare_type,
+                          &sort_op.comparator(), rewriter);
+  return sort_op;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1039,6 +1017,22 @@ mlir::ArrayAttr GetPrecisionConfigAttr(StringAttr attr, Builder *builder) {
   ::xla::PrecisionConfig precision;
   if (!precision.ParseFromString(attr.getValue().str())) return {};
   return ::xla::ConvertPrecisionConfig(&precision, builder);
+}
+
+//===----------------------------------------------------------------------===//
+// XlaVariadicReduceV2 op utilities.
+//===----------------------------------------------------------------------===//
+
+static void BuildBodyWithCall(PatternRewriter &rewriter, const Location &loc,
+                              mlir::SymbolRefAttr func,
+                              mlir::FunctionType func_ty, Region *body) {
+  OpBuilder::InsertionGuard guard(rewriter);
+
+  Block *block = rewriter.createBlock(body);
+  block->addArguments(func_ty.getInputs());
+  mlir::CallOp call_op = rewriter.create<mlir::CallOp>(
+      loc, func, func_ty.getResults(), block->getArguments());
+  rewriter.create<mhlo::ReturnOp>(loc, call_op.getResults());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1122,53 +1116,57 @@ class ConvertConvDynamic : public OpRewritePattern<OpT> {
     Location loc = op.getLoc();
     switch (padding_type) {
       case tensorflow::Padding::VALID: {
-        auto zero = rewriter.create<ConstantIntOp>(loc, 0, shape_scalar_type);
+        auto zero =
+            rewriter.create<arith::ConstantIntOp>(loc, 0, shape_scalar_type);
         *padding_low = *padding_high = zero;
         break;
       }
       case tensorflow::Padding::EXPLICIT:
         break;
       case tensorflow::Padding::SAME: {
-        auto zero = rewriter.create<ConstantIntOp>(loc, 0, shape_scalar_type);
-        auto one = rewriter.create<ConstantIntOp>(loc, 1, shape_scalar_type);
-        auto two = rewriter.create<ConstantIntOp>(loc, 2, shape_scalar_type);
+        auto zero =
+            rewriter.create<arith::ConstantIntOp>(loc, 0, shape_scalar_type);
+        auto one =
+            rewriter.create<arith::ConstantIntOp>(loc, 1, shape_scalar_type);
+        auto two =
+            rewriter.create<arith::ConstantIntOp>(loc, 2, shape_scalar_type);
         // See also the parallel implementation in
         // GetWindowedOutputSizeFromDimsV2. effective_filter_size = (filter_size
         // - 1) * dilation_rate + 1
-        Value stride_value =
-            rewriter.create<ConstantIntOp>(loc, stride, shape_scalar_type);
-        Value dilation_rate_value = rewriter.create<ConstantIntOp>(
+        Value stride_value = rewriter.create<arith::ConstantIntOp>(
+            loc, stride, shape_scalar_type);
+        Value dilation_rate_value = rewriter.create<arith::ConstantIntOp>(
             loc, dilation_rate, shape_scalar_type);
-        Value effective_filter_size_op = rewriter.create<AddIOp>(
+        Value effective_filter_size_op = rewriter.create<arith::AddIOp>(
             loc, one,
-            rewriter.create<MulIOp>(
+            rewriter.create<arith::MulIOp>(
                 loc, dilation_rate_value,
-                rewriter.create<SubIOp>(loc, filter_size, one)));
+                rewriter.create<arith::SubIOp>(loc, filter_size, one)));
         // output_size = (input_size + stride - 1) / stride;
-        Value output_size = rewriter.create<UnsignedDivIOp>(
+        Value output_size = rewriter.create<arith::DivUIOp>(
             loc,
-            rewriter.create<AddIOp>(
+            rewriter.create<arith::AddIOp>(
                 loc, input_size,
-                rewriter.create<SubIOp>(loc, stride_value, one)),
+                rewriter.create<arith::SubIOp>(loc, stride_value, one)),
             stride_value);
         // std::max(int64{0}, (output_size - 1) * stride +
         //     effective_filter_size - input_size);
-        Value padding_needed = rewriter.create<SubIOp>(
+        Value padding_needed = rewriter.create<arith::SubIOp>(
             loc,
-            rewriter.create<AddIOp>(
+            rewriter.create<arith::AddIOp>(
                 loc, effective_filter_size_op,
-                rewriter.create<MulIOp>(
+                rewriter.create<arith::MulIOp>(
                     loc, stride_value,
-                    rewriter.create<SubIOp>(loc, output_size, one))),
+                    rewriter.create<arith::SubIOp>(loc, output_size, one))),
             input_size);
-        Value cond = rewriter.create<mlir::CmpIOp>(loc, CmpIPredicate::sge,
-                                                   padding_needed, zero);
+        Value cond = rewriter.create<mlir::arith::CmpIOp>(
+            loc, arith::CmpIPredicate::sge, padding_needed, zero);
         padding_needed = rewriter.create<mlir::SelectOp>(
             loc, padding_needed.getType(), cond, padding_needed, zero);
         *padding_low =
-            rewriter.create<UnsignedDivIOp>(loc, padding_needed, two);
+            rewriter.create<arith::DivUIOp>(loc, padding_needed, two);
         *padding_high =
-            rewriter.create<SubIOp>(loc, padding_needed, *padding_low);
+            rewriter.create<arith::SubIOp>(loc, padding_needed, *padding_low);
         break;
       }
     }
@@ -1220,11 +1218,13 @@ class ConvertConvDynamic : public OpRewritePattern<OpT> {
     auto shape_scalar_type = rewriter.getIntegerType(32);
 
     auto get_const = [&](int64_t val) {
-      return rewriter.create<mlir::ConstantIntOp>(loc, val, shape_scalar_type);
+      return rewriter.create<mlir::arith::ConstantIntOp>(loc, val,
+                                                         shape_scalar_type);
     };
     auto get_dim_value = [&](Value val, int64_t dim) {
       Value dim_value = rewriter.create<tensor::DimOp>(loc, val, dim);
-      return rewriter.create<IndexCastOp>(loc, dim_value, shape_scalar_type);
+      return rewriter.create<arith::IndexCastOp>(loc, dim_value,
+                                                 shape_scalar_type);
     };
 
     for (auto i : llvm::seq<int>(0, num_spatial_dims)) {
@@ -1279,7 +1279,9 @@ class ConvertConvDynamic : public OpRewritePattern<OpT> {
         "batch_group_count", rewriter.getI64IntegerAttr(1));
 
     Value paddings_op = rewriter.create<tensor::FromElementsOp>(
-        op.getLoc(), rewriter.getI32Type(), paddings);
+        op.getLoc(),
+        RankedTensorType::get(2 * num_spatial_dims, rewriter.getI32Type()),
+        paddings);
 
     SmallVector<Value, 3> operands(op.getOperands());
     operands.push_back(paddings_op);
@@ -1567,16 +1569,16 @@ class ConvertGatherNdOpDynamic : public OpRewritePattern<TF::GatherNdOp> {
     Value slice_sizes_value = nullptr;
     for (int64_t i = 0; i < params_rank; ++i) {
       if (i < num_index_dims) {
-        slice_sizes_vals.push_back(rewriter.create<ConstantOp>(
+        slice_sizes_vals.push_back(rewriter.create<arith::ConstantOp>(
             loc, rewriter.getIntegerAttr(indices_ty.getElementType(), 1)));
       } else {
         int64_t dim_size = params_ty.getDimSize(i);
         if (dim_size != ShapedType::kDynamicSize) {
-          slice_sizes_vals.push_back(rewriter.create<ConstantOp>(
+          slice_sizes_vals.push_back(rewriter.create<arith::ConstantOp>(
               loc,
               rewriter.getIntegerAttr(indices_ty.getElementType(), dim_size)));
         } else {
-          slice_sizes_vals.push_back(rewriter.create<IndexCastOp>(
+          slice_sizes_vals.push_back(rewriter.create<arith::IndexCastOp>(
               loc, rewriter.create<tensor::DimOp>(loc, params, i),
               indices_ty.getElementType()));
         }
@@ -2197,7 +2199,7 @@ class ConvertFFTOp : public OpRewritePattern<OpTy> {
     }
     int64_t fft_length;
     if (fft_length_attr.getNumElements() != 0) {
-      fft_length = fft_length_attr.getValue<IntegerAttr>(0).getInt();
+      fft_length = fft_length_attr.getValues<IntegerAttr>()[0].getInt();
     } else {
       return failure();
     }
@@ -2966,7 +2968,7 @@ using ConvertAvgPool3DGradOp =
 //
 // Sample result for VALID padding mode:
 //
-//   %init = constant dense<...> : tensor<i32>
+//   %init = arith.constant dense<...> : tensor<i32>
 //   %max_pool = "mhlo.reduce"(%inp, %init) ["mhlo.maximum"]
 //               {window_dimensions = ..., window_strides = ... }
 //
@@ -3038,7 +3040,7 @@ class ConvertSelectOp : public OpRewritePattern<TF::SelectOp> {
     bool needs_broadcast = cond_type.getRank() == 1 && then_type.getRank() != 1;
     Value then_shape_split = then_shape;
     if (needs_broadcast) {
-      Value const_one = b.create<ConstantIndexOp>(1);
+      Value const_one = b.create<arith::ConstantIndexOp>(1);
       Type extent_first = shape::getExtentTensorType(b.getContext(), 1);
       Type extent_second =
           shape::getExtentTensorType(b.getContext(), then_type.getRank() - 1);
@@ -3061,7 +3063,7 @@ class ConvertSelectOp : public OpRewritePattern<TF::SelectOp> {
         b.create<shape::AssumingOp>(ArrayRef<Type>{result_type}, assumption);
 
     OpBuilder::InsertionGuard guard(b);
-    b.createBlock(&assuming_op.doRegion());
+    b.createBlock(&assuming_op.getDoRegion());
 
     // Broadcast the cond if necessary.
     Value cond = op.condition();
@@ -3166,42 +3168,53 @@ class ConvertSliceOpDynamic : public OpRewritePattern<TF::SliceOp> {
 
     int rank = begin_type.getDimSize(0);
     auto shape_scalar_type = begin_type.getElementType();
-    Value one = rewriter.create<ConstantIndexOp>(loc, 1);
+    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     SmallVector<Value, 4> stride_values(rank, one);
     SmallVector<Value, 4> end_values;
     SmallVector<Value, 4> begin_values;
     end_values.reserve(rank);
     for (int i = 0; i < rank; ++i) {
       SmallVector<Value, 4> indices;
-      indices.push_back(rewriter.create<ConstantIndexOp>(loc, i));
+      indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, i));
       auto begin_value =
           rewriter.create<tensor::ExtractOp>(loc, begin_indices, indices);
       auto size_value = rewriter.create<tensor::ExtractOp>(loc, sizes, indices);
-      Value minus_one = rewriter.create<IndexCastOp>(
-          loc, rewriter.create<ConstantIndexOp>(loc, -1), shape_scalar_type);
-      auto is_minus_one = rewriter.create<CmpIOp>(loc, CmpIPredicate::eq,
-                                                  size_value, minus_one);
-      Value end_value = rewriter.create<AddIOp>(loc, begin_value, size_value);
-      auto dim_value = rewriter.create<IndexCastOp>(
+      Value minus_one = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.create<arith::ConstantIndexOp>(loc, -1),
+          shape_scalar_type);
+      auto is_minus_one = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq, size_value, minus_one);
+      Value end_value =
+          rewriter.create<arith::AddIOp>(loc, begin_value, size_value);
+      auto dim_value = rewriter.create<arith::IndexCastOp>(
           loc, rewriter.create<tensor::DimOp>(loc, input, i),
           shape_scalar_type);
       end_value = rewriter.create<mlir::SelectOp>(loc, is_minus_one, dim_value,
                                                   end_value);
-      auto end_value_casted =
-          rewriter.create<IndexCastOp>(loc, rewriter.getIndexType(), end_value);
+      auto end_value_casted = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), end_value);
       end_values.push_back(end_value_casted);
 
-      auto begin_value_casted = rewriter.create<IndexCastOp>(
+      auto begin_value_casted = rewriter.create<arith::IndexCastOp>(
           loc, rewriter.getIndexType(), begin_value);
       begin_values.push_back(begin_value_casted);
     }
-
+    auto index_ty = rewriter.getIndexType();
     auto start_indices = rewriter.create<tensor::FromElementsOp>(
-        loc, rewriter.getIndexType(), begin_values);
+        loc,
+        RankedTensorType::get({static_cast<int64_t>(begin_values.size())},
+                              index_ty),
+        begin_values);
     auto end_indices = rewriter.create<tensor::FromElementsOp>(
-        loc, rewriter.getIndexType(), end_values);
+        loc,
+        RankedTensorType::get({static_cast<int64_t>(end_values.size())},
+                              index_ty),
+        end_values);
     auto stride_indices = rewriter.create<tensor::FromElementsOp>(
-        loc, rewriter.getIndexType(), stride_values);
+        loc,
+        RankedTensorType::get({static_cast<int64_t>(stride_values.size())},
+                              index_ty),
+        stride_values);
 
     auto d_slice = rewriter.create<mhlo::RealDynamicSliceOp>(
         loc, op.getOperation()->getResult(0).getType(), input, start_indices,
@@ -3234,7 +3247,7 @@ static void BroadcastBatchMatMulV2Operands(Value lhs, Value rhs, Location loc,
   Value lhs_shape = rewriter->create<shape::ShapeOfOp>(loc, lhs);
   Value rhs_shape = rewriter->create<shape::ShapeOfOp>(loc, rhs);
   Value const_neg2 =
-      rewriter->create<ConstantOp>(loc, rewriter->getIndexAttr(-2));
+      rewriter->create<arith::ConstantOp>(loc, rewriter->getIndexAttr(-2));
   auto shape_type = shape::ShapeType::get(rewriter->getContext());
   auto lhs_splitted = rewriter->create<shape::SplitAtOp>(
       loc, TypeRange{shape_type, shape_type}, lhs_shape, const_neg2);
@@ -3249,7 +3262,7 @@ static void BroadcastBatchMatMulV2Operands(Value lhs, Value rhs, Location loc,
       lhs_type.getShape().drop_back(2), rhs_type.getShape().drop_back(2),
       result_batch_shape_compile_time_extents);
   auto result_batch_shape = rewriter->create<shape::BroadcastOp>(
-      loc, shape_type, lhs_splitted.head(), rhs_splitted.head(),
+      loc, shape_type, lhs_splitted.getHead(), rhs_splitted.getHead(),
       /*error=*/nullptr);
   // Lambda which handles the broadcasting of one side to the common
   // leading-batch dimensions.
@@ -3270,8 +3283,8 @@ static void BroadcastBatchMatMulV2Operands(Value lhs, Value rhs, Location loc,
     *out_side = rewriter->create<TF::BroadcastToOp>(loc, result_type, side,
                                                     shape_tensor);
   };
-  broadcast_one_side(lhs, lhs_type, lhs_splitted.tail(), out_lhs);
-  broadcast_one_side(rhs, rhs_type, rhs_splitted.tail(), out_rhs);
+  broadcast_one_side(lhs, lhs_type, lhs_splitted.getTail(), out_lhs);
+  broadcast_one_side(rhs, rhs_type, rhs_splitted.getTail(), out_rhs);
 }
 
 class ConvertBatchMatMulV2Op : public OpRewritePattern<TF::BatchMatMulV2Op> {
@@ -3457,13 +3470,13 @@ class ConvertSplitOpDynamic : public OpRewritePattern<TF::SplitOp> {
         rewriter.create<tensor::DimOp>(loc, input, dim_index);
     // Calculate the dimension size for each slice along the split dimension.
     int num_splits = op.getNumResults();
-    Value num_splits_value =
-        rewriter.create<ConstantOp>(loc, rewriter.getIndexAttr(num_splits));
+    Value num_splits_value = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(num_splits));
     Value slice_size =
-        rewriter.create<SignedDivIOp>(loc, input_dim_size, num_splits_value);
+        rewriter.create<arith::DivSIOp>(loc, input_dim_size, num_splits_value);
 
-    Value zero = rewriter.create<ConstantIndexOp>(loc, 0);
-    Value one = rewriter.create<ConstantIndexOp>(loc, 1);
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     SmallVector<Value, 4> begin_indices(input_rank, zero);
     SmallVector<Value, 4> end_indices;
@@ -3478,16 +3491,27 @@ class ConvertSplitOpDynamic : public OpRewritePattern<TF::SplitOp> {
     slices.reserve(num_splits);
 
     for (int i = 0; i < num_splits; ++i) {
-      begin_indices[dim_index] = rewriter.create<MulIOp>(
-          loc, slice_size, rewriter.create<ConstantIndexOp>(loc, i));
-      end_indices[dim_index] = rewriter.create<MulIOp>(
-          loc, slice_size, rewriter.create<ConstantIndexOp>(loc, i + 1));
+      begin_indices[dim_index] = rewriter.create<arith::MulIOp>(
+          loc, slice_size, rewriter.create<arith::ConstantIndexOp>(loc, i));
+      end_indices[dim_index] = rewriter.create<arith::MulIOp>(
+          loc, slice_size, rewriter.create<arith::ConstantIndexOp>(loc, i + 1));
+
+      Type index_ty = rewriter.getIndexType();
       auto begin_value = rewriter.create<tensor::FromElementsOp>(
-          loc, rewriter.getIndexType(), begin_indices);
+          loc,
+          RankedTensorType::get({static_cast<int64_t>(begin_indices.size())},
+                                index_ty),
+          begin_indices);
       auto end_value = rewriter.create<tensor::FromElementsOp>(
-          loc, rewriter.getIndexType(), end_indices);
+          loc,
+          RankedTensorType::get({static_cast<int64_t>(end_indices.size())},
+                                index_ty),
+          end_indices);
       auto stride_value = rewriter.create<tensor::FromElementsOp>(
-          loc, rewriter.getIndexType(), strides);
+          loc,
+          RankedTensorType::get({static_cast<int64_t>(strides.size())},
+                                index_ty),
+          strides);
       slices.push_back(rewriter.create<RealDynamicSliceOp>(
           loc, op.getOperation()->getResult(i).getType(), input, begin_value,
           end_value, stride_value));
@@ -3818,10 +3842,12 @@ class ConvertStridedSliceOp : public OpRewritePattern<TF::StridedSliceOp> {
     }
 
     auto slice_sizes_attr = GetI64ElementsAttr(slice_sizes, &rewriter);
+    auto sliced_type =
+        RankedTensorType::get(slice_sizes, op.getType().getElementType());
     // This must be an xla DynamicSlice op due to the inputs that aren't
     // constant.
     auto sliced = rewriter.create<DynamicSliceOp>(
-        loc, op.getType(), op.input(), slice_begin_indices, slice_sizes_attr);
+        loc, sliced_type, op.input(), slice_begin_indices, slice_sizes_attr);
 
     // Reshape slice result so that the shape is updated depending on
     // 'new_axis_mask' or 'shrink_axis_mask' attributes.
@@ -4209,20 +4235,21 @@ class GenericConvertReductionOp : public OpRewritePattern<OpTy> {
     // The mean op needs to divide by the product of the reduced dimensions.
     if (std::is_same<OpTy, TF::MeanOp>::value) {
       Value in_shape = rewriter.create<shape::ShapeOfOp>(loc, op.input());
-      Value divisor_count = rewriter.create<ConstantIndexOp>(loc, 1);
+      Value divisor_count = rewriter.create<arith::ConstantIndexOp>(loc, 1);
       for (size_t i = 0; i < input_shape.size(); ++i) {
         if (reduced_dimensions_bitmap[i]) {
-          Value index = rewriter.create<ConstantIndexOp>(loc, i);
+          Value index = rewriter.create<arith::ConstantIndexOp>(loc, i);
           auto dim = rewriter.create<tensor::ExtractOp>(loc, in_shape, index);
-          divisor_count = rewriter.create<MulIOp>(loc, divisor_count, dim);
+          divisor_count =
+              rewriter.create<arith::MulIOp>(loc, divisor_count, dim);
         }
       }
       // HLO ops are only defined on tensors, so we cast the divisor from
       // index -> i64 -> tensor<1xi64> -> tensor<i64> -> tensor<reduction type>
-      auto divisor_casted = rewriter.create<IndexCastOp>(
+      auto divisor_casted = rewriter.create<arith::IndexCastOp>(
           loc, rewriter.getI64Type(), divisor_count);
       auto divisor_tensor = rewriter.create<tensor::FromElementsOp>(
-          loc, rewriter.getI64Type(), ValueRange{divisor_casted});
+          loc, ValueRange{divisor_casted});
       auto divisor_reshaped = rewriter.create<mhlo::ReshapeOp>(
           loc, RankedTensorType::get({}, rewriter.getI64Type()),
           divisor_tensor);
@@ -4247,7 +4274,7 @@ class GenericConvertReductionOp : public OpRewritePattern<OpTy> {
         if (dim_is_reduced.value()) {
           auto index_attr = GetI32ElementsAttr(
               {static_cast<int>(dim_is_reduced.index())}, &rewriter);
-          Value index = rewriter.create<ConstantOp>(loc, index_attr);
+          Value index = rewriter.create<arith::ConstantOp>(loc, index_attr);
           result = rewriter.create<TF::ExpandDimsOp>(loc, result, index);
         }
       }
@@ -4260,10 +4287,10 @@ class GenericConvertReductionOp : public OpRewritePattern<OpTy> {
 
 // Converts Mean op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %sum = "mhlo.reduce"(%inp, %init) ["mhlo.add"]
 //               {dimensions = ...}
-//   %divisor = constant dense<...> : tensor<T>
+//   %divisor = arith.constant dense<...> : tensor<T>
 //   %mean = "mhlo.divide"(%sum, %divisor)
 class ConvertMeanOp
     : public GenericConvertReductionOp<ConvertMeanOp, TF::MeanOp, AddOp> {
@@ -4277,7 +4304,7 @@ class ConvertMeanOp
 
 // Converts Sum op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %sum = "mhlo.reduce"(%inp, %init) ["mhlo.add"]
 //               {dimensions = ...}
 class ConvertSumOp
@@ -4293,7 +4320,7 @@ class ConvertSumOp
 
 // Converts Max op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %max = "mhlo.reduce"(%inp, %init) ["mhlo.maximum"]
 //               {dimensions = ...}
 class ConvertMaxOp
@@ -4311,7 +4338,7 @@ class ConvertMaxOp
 
 // Converts Min op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %min = "mhlo.reduce"(%inp, %init) ["mhlo.minimum"]
 //               {dimensions = ...}
 class ConvertMinOp
@@ -4329,7 +4356,7 @@ class ConvertMinOp
 
 // Converts Prod op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %prod = "mhlo.reduce"(%inp, %init) ["mhlo.multiply"]
 //               {dimensions = ...}
 class ConvertProdOp
@@ -4345,7 +4372,7 @@ class ConvertProdOp
 
 // Converts All op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %max = "mhlo.reduce"(%inp, %init) ["mhlo.and"]
 //               {dimensions = ...}
 class ConvertAllOp
@@ -4360,7 +4387,7 @@ class ConvertAllOp
 
 // Converts Any op to HLO Reduce op.
 //
-//   %init = constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %max = "mhlo.reduce"(%inp, %init) ["mhlo.or"]
 //               {dimensions = ...}
 class ConvertAnyOp
@@ -4447,8 +4474,8 @@ class ConvertArgMinMaxOp : public OpRewritePattern<OpTy> {
 // Converts tensorflow ArgMax op to mhlo operations. The actual
 // implementation is in class ConvertArgMinMaxOp:
 //
-//   %init_index = constant dense<...> : tensor<T>
-//   %init = constant dense<...> : tensor<T>
+//   %init_index = arith.constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %reduce = "mhlo.reduce"(%selected_input, %select_index, %init,
 //                              %init_index) ["mhlo.arg_max"]
 class ConvertArgMaxOp
@@ -4468,8 +4495,8 @@ class ConvertArgMaxOp
 // Converts tensorflow ArgMin op to mhlo operations. The actual
 // implementation is in class ConvertArgMinMaxOp:
 //
-//   %init_index = constant dense<...> : tensor<T>
-//   %init = constant dense<...> : tensor<T>
+//   %init_index = arith.constant dense<...> : tensor<T>
+//   %init = arith.constant dense<...> : tensor<T>
 //   %reduce = "mhlo.reduce"(%selected_input, %select_index, %init,
 //                              %init_index) ["mhlo.arg_min"]
 class ConvertArgMinOp
@@ -4736,8 +4763,8 @@ class ConvertTileOpDynamic : public OpRewritePattern<TF::TileOp> {
         input_shape_values.push_back(
             rewriter.create<tensor::DimOp>(loc, input, i));
       } else {
-        input_shape_values.push_back(
-            rewriter.create<ConstantOp>(loc, rewriter.getIndexAttr(dim_size)));
+        input_shape_values.push_back(rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getIndexAttr(dim_size)));
       }
     }
 
@@ -4750,16 +4777,17 @@ class ConvertTileOpDynamic : public OpRewritePattern<TF::TileOp> {
         (multiples_ty.getDimSize(0) != input_rank)) {
       return failure();
     }
+    Type index_ty = rewriter.getIndexType();
     // %out_dim_size
     SmallVector<Value, 4> out_dim_size;
     out_dim_size.reserve(input_rank * 2);
     for (int64_t dim_idx = 0; dim_idx < input_rank; ++dim_idx) {
-      Value index =
-          rewriter.create<ConstantOp>(loc, rewriter.getIndexAttr(dim_idx));
+      Value index = rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getIndexAttr(dim_idx));
       Value multiples_size =
           rewriter.create<tensor::ExtractOp>(loc, multiples, ValueRange{index});
-      Value multiples_size_casted = rewriter.create<IndexCastOp>(
-          loc, rewriter.getIndexType(), multiples_size);
+      Value multiples_size_casted =
+          rewriter.create<arith::IndexCastOp>(loc, index_ty, multiples_size);
       out_dim_size.push_back(multiples_size_casted);
       out_dim_size.push_back(input_shape_values[dim_idx]);
     }
@@ -4772,7 +4800,10 @@ class ConvertTileOpDynamic : public OpRewritePattern<TF::TileOp> {
         GetI64ElementsAttr(broadcast_dimensions, &rewriter);
 
     Value out_dim_size_tensor = rewriter.create<tensor::FromElementsOp>(
-        loc, rewriter.getIndexType(), out_dim_size);
+        loc,
+        RankedTensorType::get({static_cast<int64_t>(out_dim_size.size())},
+                              index_ty),
+        out_dim_size);
     SmallVector<int64_t, 4> broadcast_shape(input_rank * 2,
                                             ShapedType::kDynamicSize);
     RankedTensorType broadcast_type =
@@ -4784,12 +4815,12 @@ class ConvertTileOpDynamic : public OpRewritePattern<TF::TileOp> {
     SmallVector<Value, 4> shape_values;
     shape_values.reserve(input_rank);
     for (int64_t i = 0; i < input_rank; ++i) {
-      Value dim_size_value = rewriter.create<mlir::MulIOp>(
+      Value dim_size_value = rewriter.create<mlir::arith::MulIOp>(
           loc, out_dim_size[2 * i], out_dim_size[2 * i + 1]);
       shape_values.push_back(dim_size_value);
     }
     Value shape = rewriter.create<tensor::FromElementsOp>(
-        loc, rewriter.getIndexType(), shape_values);
+        loc, RankedTensorType::get({input_rank}, index_ty), shape_values);
     rewriter.replaceOpWithNewOp<mhlo::DynamicReshapeOp>(op, op.getType(),
                                                         broadcast, shape);
     return success();
@@ -5253,7 +5284,7 @@ class ConvertOneHotOp : public OpRewritePattern<TF::OneHotOp> {
       return failure();
     }
 
-    int64_t depth = depth_attr.getValue<APInt>({}).getSExtValue();
+    int64_t depth = depth_attr.getValues<APInt>()[0].getSExtValue();
     int64_t axis = op.axis();
     if (axis == -1) axis = indices_shape.size();
 
@@ -5383,7 +5414,8 @@ class ConvertInfeedDequeueTupleOp
         rewriter.getI32IntegerAttr(0));
 
     // Emit get_tuple_element for each result.
-    std::vector<Value> results;
+    llvm::SmallVector<Value> results;
+    results.reserve(result_types.size());
     for (auto idx_and_type : llvm::enumerate(result_types)) {
       auto tuple_element = rewriter.create<GetTupleElementOp>(
           op.getLoc(), idx_and_type.value(), data_tuple,
@@ -5486,19 +5518,12 @@ class ConvertTopKV2Op : public OpRewritePattern<TF::TopKV2Op> {
         op.getLoc(), iota_type, rewriter.getI64IntegerAttr(last_dim_index));
 
     // Create the sort op. It takes two inputs, one for the original input, the
-    // other for the indices.
-    auto sort_op = rewriter.create<mhlo::SortOp>(
-        op.getLoc(), llvm::ArrayRef<Value>{op.input(), iota_op}, last_dim_index,
-        /*is_stable=*/true);
-
-    // Use TOTALORDER comparison type instead of the default comparison if the
-    // element type is of type float.
-    llvm::Optional<StringRef> compare_type;
-    if (input_type.getElementType().isa<FloatType>())
-      compare_type.emplace("TOTALORDER");
-    BuildSortComparisonBody({input_type.getElementType(), i32_type},
-                            /*direction=*/"GT", compare_type,
-                            &sort_op.comparator(), &rewriter);
+    // other for the indices. Use TOTALORDER comparison type instead of the
+    // default comparison if the element type is of type float.
+    Type element_type = input_type.getElementType();
+    auto sort_op = CreateSortOp(&rewriter, op.getLoc(), {op.input(), iota_op},
+                                {element_type, i32_type}, last_dim_index,
+                                /*is_stable=*/true, /*direction=*/"GT");
 
     // Get the sorted input and index tuple element.
     auto tuple_first_element = sort_op.getResult(0);
@@ -5611,7 +5636,7 @@ class ConvertUnpackOpDynamic : public OpRewritePattern<TF::UnpackOp> {
     for (int64_t dim_idx = 0; dim_idx < value_rank; ++dim_idx) {
       int64_t dim_size = value_type.getDimSize(dim_idx);
       if (dim_size == ShapedType::kDynamicSize) {
-        Value dim_i = rewriter.create<IndexCastOp>(
+        Value dim_i = rewriter.create<arith::IndexCastOp>(
             loc, rewriter.create<tensor::DimOp>(loc, op.getOperand(), dim_idx),
             shape_scalar_type);
         end_indices.push_back(dim_i);
@@ -5619,7 +5644,7 @@ class ConvertUnpackOpDynamic : public OpRewritePattern<TF::UnpackOp> {
           shape_values.push_back(dim_i);
         }
       } else {
-        Value dim_i = rewriter.create<ConstantOp>(
+        Value dim_i = rewriter.create<arith::ConstantOp>(
             loc, shape_scalar_type,
             rewriter.getIntegerAttr(shape_scalar_type, dim_size));
         end_indices.push_back(dim_i);
@@ -5630,27 +5655,41 @@ class ConvertUnpackOpDynamic : public OpRewritePattern<TF::UnpackOp> {
           slice_shape[dim_idx] = 1;
         }
       }
-      begin_indices.push_back(rewriter.create<ConstantIntOp>(loc, 0, 32));
-      strides.push_back(rewriter.create<ConstantIntOp>(loc, 1, 32));
+      begin_indices.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, 0, 32));
+      strides.push_back(rewriter.create<arith::ConstantIntOp>(loc, 1, 32));
     }
 
     SmallVector<Value, 4> results;
     results.reserve(op.getNumResults());
+    Type i32_ty = rewriter.getI32Type();
     for (int64_t i = 0; i < op.getNumResults(); ++i) {
-      begin_indices[axis] = rewriter.create<ConstantIntOp>(loc, i, 32);
-      end_indices[axis] = rewriter.create<ConstantIntOp>(loc, i + 1, 32);
+      begin_indices[axis] = rewriter.create<arith::ConstantIntOp>(loc, i, 32);
+      end_indices[axis] = rewriter.create<arith::ConstantIntOp>(loc, i + 1, 32);
       Value slice_op = rewriter.create<RealDynamicSliceOp>(
           loc, RankedTensorType::get(slice_shape, value_type.getElementType()),
           op.value(),
-          rewriter.create<tensor::FromElementsOp>(loc, rewriter.getI32Type(),
-                                                  begin_indices),
-          rewriter.create<tensor::FromElementsOp>(loc, rewriter.getI32Type(),
-                                                  end_indices),
-          rewriter.create<tensor::FromElementsOp>(loc, rewriter.getI32Type(),
-                                                  strides));
+          rewriter.create<tensor::FromElementsOp>(
+              loc,
+              RankedTensorType::get(
+                  {static_cast<int64_t>(begin_indices.size())}, i32_ty),
+              begin_indices),
+          rewriter.create<tensor::FromElementsOp>(
+              loc,
+              RankedTensorType::get({static_cast<int64_t>(end_indices.size())},
+                                    i32_ty),
+              end_indices),
+          rewriter.create<tensor::FromElementsOp>(
+              loc,
+              RankedTensorType::get({static_cast<int64_t>(strides.size())},
+                                    i32_ty),
+              strides));
       // Reshape to drop the axis dimension.
       Value new_shape = rewriter.create<tensor::FromElementsOp>(
-          loc, rewriter.getI32Type(), shape_values);
+          loc,
+          RankedTensorType::get({static_cast<int64_t>(shape_values.size())},
+                                i32_ty),
+          shape_values);
       Value reshape_op = rewriter.create<DynamicReshapeOp>(loc, op.getType(i),
                                                            slice_op, new_shape);
       results.push_back(reshape_op);
@@ -5947,12 +5986,10 @@ class ConvertRandomShuffleOp : public OpRewritePattern<TF::RandomShuffleOp> {
         auto keys =
             CreateRngUniform32(op.getLoc(), num_elements, /*lower_limit=*/0,
                                /*upper_limit=*/u32_max, &rewriter);
-        auto sorted = rewriter.create<mhlo::SortOp>(
-            op.getLoc(), llvm::ArrayRef<Value>{keys, current});
-        auto i32_type = rewriter.getIntegerType(32);
-        BuildSortComparisonBody({i32_type, input_type.getElementType()},
-                                /*direction=*/"LT", llvm::None,
-                                &sorted.comparator(), &rewriter);
+        auto sorted = CreateSortOp(
+            &rewriter, op.getLoc(), {keys, current},
+            {rewriter.getIntegerType(32), input_type.getElementType()},
+            /*dimension=*/-1, /*is_stable=*/false, /*direction=*/"LT");
         current = sorted.getResult(1);
       }
       rewriter.replaceOp(op, current);
@@ -6047,15 +6084,12 @@ class ConvertXlaShardingOp : public OpRewritePattern<TF::XlaShardingOp> {
     // using a string.
     if (!op._XlaSharding().hasValue()) return failure();
 
+    NamedAttribute call_target_name = rewriter.getNamedAttr(
+        "call_target_name", rewriter.getStringAttr("Sharding"));
+
     auto custom_call = rewriter.create<mhlo::CustomCallOp>(
         op.getLoc(), op.getType(), op.input(),
-        /*call_target_name=*/rewriter.getStringAttr("Sharding"),
-        /*has_side_effect=*/rewriter.getBoolAttr(false),
-        /*backend_config=*/rewriter.getStringAttr(""),
-        /*api_version=*/
-        mhlo::CustomCallApiVersionAttr::get(
-            rewriter.getContext(),
-            mhlo::CustomCallApiVersion::API_VERSION_ORIGINAL));
+        ArrayRef<NamedAttribute>{call_target_name});
     custom_call->setAttr(kShardingAttr, op._XlaShardingAttr());
     rewriter.replaceOp(op, custom_call.getResult(0));
 
@@ -6079,6 +6113,9 @@ class ConvertInplaceUpdateOp : public OpRewritePattern<TF::InplaceUpdateOp> {
     auto input_type = input.getType().cast<ShapedType>();
     auto updates_type = updates.getType().cast<ShapedType>();
     auto indices_type = indices.getType().cast<ShapedType>();
+    if (!input_type.hasRank()) return failure();
+    if (!updates_type.hasRank() || updates_type.isDynamicDim(0))
+      return failure();
     if (!indices_type.hasStaticShape()) return failure();
 
     if (indices_type.getRank() != 1) return failure();
@@ -6113,11 +6150,6 @@ class ConvertInplaceUpdateOp : public OpRewritePattern<TF::InplaceUpdateOp> {
     SmallVector<Value, 6> input_indices;
     input_indices.resize(input_type.getRank(), cst);
 
-    SmallVector<int64_t, 6> starts(updates_type.getRank(), 0);
-    SmallVector<int64_t, 6> strides(updates_type.getRank(), 1);
-    SmallVector<int64_t, 6> limits(updates_type.getShape().begin(),
-                                   updates_type.getShape().end());
-
     for (auto pair :
          llvm::zip(unpacked_indices.output(), split_updates.output())) {
       input_indices.front() = std::get<0>(pair);
@@ -6151,62 +6183,6 @@ class ConvertXlaDynamicUpdateSliceOp
         IntegerAttr::get(rewriter.getIntegerType(64), 0));
     rewriter.replaceOpWithNewOp<mhlo::DynamicUpdateSliceOp>(
         op, op.getType(), op.input(), op.update(), unpacked_indices.output());
-    return success();
-  }
-};
-
-// Converts a TF XlaAllReduce op to AllReduce HLO.
-class ConvertXlaAllReduceOp : public OpRewritePattern<TF::XlaAllReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(TF::XlaAllReduceOp op,
-                                PatternRewriter &rewriter) const override {
-    DenseIntElementsAttr group_assignment;
-    if (!matchPattern(op.group_assignment(), m_Constant(&group_assignment)))
-      return failure();
-    auto replica_groups =
-        hlo::ConvertElementsAttr(group_assignment, rewriter.getIntegerType(64))
-            .cast<DenseIntElementsAttr>();
-    if (replica_groups.getType().getRank() != 2) return failure();
-
-    Location loc = op.getLoc();
-    Type element_type = getElementTypeOrSelf(op.input().getType());
-
-    auto all_reduce = rewriter.create<AllReduceOp>(
-        loc, op.getType(), op.input(), replica_groups, ChannelHandle());
-    StringRef reduce_op = op.reduce_op();
-    if (reduce_op == "Add") {
-      BuildReduceBody<AddOp>(element_type, &all_reduce.computation(),
-                             &rewriter);
-    } else if (reduce_op == "Mul") {
-      BuildReduceBody<MulOp>(element_type, &all_reduce.computation(),
-                             &rewriter);
-    } else if (reduce_op == "Min") {
-      BuildReduceBody<MinOp>(element_type, &all_reduce.computation(),
-                             &rewriter);
-    } else if (reduce_op == "Max") {
-      BuildReduceBody<MaxOp>(element_type, &all_reduce.computation(),
-                             &rewriter);
-    } else {
-      // For mean, add replicas in the same group. Then divide the sum by the
-      // number of replicas in each group below.
-      assert(reduce_op == "Mean");
-      BuildReduceBody<AddOp>(element_type, &all_reduce.computation(),
-                             &rewriter);
-    }
-    Value result = all_reduce.getResult();
-
-    // For mean, divide the merge result by group size.
-    if (reduce_op == "Mean") {
-      int64_t replica_group_size = replica_groups.getType().getDimSize(1);
-      auto divisor = GetScalarConstOfType(element_type, loc, replica_group_size,
-                                          &rewriter);
-      auto broadcast_dims = GetI64ElementsAttr({}, &rewriter);
-      result = rewriter.create<chlo::BroadcastDivOp>(
-          loc, result, divisor.getResult(), broadcast_dims);
-    }
-
-    rewriter.replaceOp(op, {result});
     return success();
   }
 };
@@ -6407,7 +6383,7 @@ class ConvertCumOp : public OpRewritePattern<OpT> {
                                       &rewriter);
 
     auto reduce = rewriter.create<ReduceWindowOp>(
-        op.getLoc(), input_type, input, init,
+        op.getLoc(), input.getType(), input, init,
         GetI64ElementsAttr(rewriter.getI64ArrayAttr(window_dims)),
         GetI64ElementsAttr(rewriter.getI64ArrayAttr(window_strides)),
         /*base_dilations=*/DenseIntElementsAttr(),
@@ -6426,7 +6402,7 @@ class ConvertCumOp : public OpRewritePattern<OpT> {
       low_padding[axis] = 1;
       high_padding[axis] = -1;
       result = rewriter.create<PadOp>(
-          op.getLoc(), op.getType(), result, init,
+          op.getLoc(), result.getType(), result, init,
           GetI64ElementsAttr(low_padding, &rewriter),
           GetI64ElementsAttr(high_padding, &rewriter),
           GetI64ElementsAttr(interior_padding, &rewriter));
@@ -6472,7 +6448,7 @@ class ConvertShapeOp : public OpRewritePattern<TF::ShapeOp> {
         RankedTensorType::get(result_ty.getShape(), rewriter.getIndexType());
     auto shape_op =
         rewriter.create<shape::ShapeOfOp>(op.getLoc(), index_tensor, input);
-    rewriter.replaceOpWithNewOp<IndexCastOp>(op, shape_op, result_ty);
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, shape_op, result_ty);
     return success();
   }
 };
@@ -6516,11 +6492,12 @@ class ConvertDynamicExpandDimsOp : public OpRewritePattern<TF::ExpandDimsOp> {
       }
     }
 
-    dims[inserted_dim] = rewriter.create<ConstantIndexOp>(op.getLoc(), 1);
+    dims[inserted_dim] =
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
 
     for (int i = 0; i < dims.size() - 1; i++) {
       // Add the extracted dim.
-      Value index = rewriter.create<ConstantIndexOp>(op.getLoc(), i);
+      Value index = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), i);
       Value dim = rewriter.create<tensor::ExtractOp>(op.getLoc(), shape, index);
       dims[i >= inserted_dim ? i + 1 : i] = dim;
     }
@@ -6528,6 +6505,55 @@ class ConvertDynamicExpandDimsOp : public OpRewritePattern<TF::ExpandDimsOp> {
     auto from_extents =
         rewriter.create<tensor::FromElementsOp>(op.getLoc(), dims);
     rewriter.replaceOpWithNewOp<mhlo::DynamicReshapeOp>(op, result_ty, input,
+                                                        from_extents);
+    return success();
+  }
+};
+
+class ConvertDynamicSqueezeOp : public OpRewritePattern<TF::SqueezeOp> {
+ public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::SqueezeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.input();
+    auto input_ty = input.getType().cast<ShapedType>();
+    auto result_ty = op.getType().cast<ShapedType>();
+    if (!result_ty.hasRank() || !input_ty.hasRank() ||
+        result_ty.hasStaticShape()) {
+      return failure();
+    }
+
+    // The fully dynamic case is unsupported.
+    if (op.squeeze_dims().empty()) {
+      return failure();
+    }
+
+    SmallVector<int64_t> squeeze_dims;
+    int64_t input_rank = input_ty.getRank();
+    for (const auto &squeeze_dim_apint :
+         op.squeeze_dims().getAsValueRange<IntegerAttr>()) {
+      int64_t squeeze_dim = squeeze_dim_apint.getSExtValue();
+      // Handle negative inputs.
+      if (squeeze_dim < 0) squeeze_dim += input_rank;
+      assert(squeeze_dim >= 0 && squeeze_dim < input_rank &&
+             "squeeze dim out of bounds");
+
+      squeeze_dims.push_back(squeeze_dim);
+    }
+
+    // Collect the unsqueezed dimensions.
+    llvm::SmallVector<Value> dims;
+    for (int64_t i = 0; i != input_rank; ++i) {
+      if (llvm::is_contained(squeeze_dims, i)) continue;
+      dims.push_back(rewriter.create<tensor::DimOp>(op.getLoc(), input, i));
+    }
+
+    auto from_extents =
+        rewriter.create<tensor::FromElementsOp>(op.getLoc(), dims);
+    // chlo::DynamicReshapeOp checks if the reshape is legal and will fail if
+    // any non-1 dimension is squeezed.
+    rewriter.replaceOpWithNewOp<chlo::DynamicReshapeOp>(op, result_ty, input,
                                                         from_extents);
     return success();
   }
@@ -7038,6 +7064,77 @@ class ConvertPrintOp : public OpRewritePattern<TF::PrintOp> {
     return success();
   }
 };
+
+// Convert tf.Xlasort to mhlo.Sort
+class ConvertXlaSortOp : public OpRewritePattern<TF::XlaSortOp> {
+ public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::XlaSortOp op,
+                                PatternRewriter &rewriter) const override {
+    // Create the sort op.
+    Type element_type = getElementTypeOrSelf(op.input().getType());
+    auto sort_op =
+        CreateSortOp(&rewriter, op.getLoc(), {op.input()}, {element_type},
+                     /*dimension=*/-1, /*is_stable=*/false, /*direction=*/"LT");
+    rewriter.replaceOp(op, sort_op.getResult(0));
+    return success();
+  }
+};
+
+// Converts tf.XlaVariadicReduceV2 to mhlo.Reduce
+class ConvertXlaVariadicReduceV2Op
+    : public OpRewritePattern<TF::XlaVariadicReduceV2Op> {
+ public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::XlaVariadicReduceV2Op op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Create the mhlo.reduce op.
+    auto reduce_op = rewriter.create<mhlo::ReduceOp>(
+        loc, op.inputs(), op.init_values(),
+        GetI64ElementsAttr(op.dimensions_to_reduce()));
+    mlir::SymbolRefAttr func = op.reducer();
+    auto func_op = cast<mlir::FuncOp>(SymbolTable::lookupSymbolIn(
+        op->getParentOfType<mlir::ModuleOp>(), func));
+    auto func_ty = func_op.getType();
+    // Insert a call to the reducer in the region of the mhlo op.
+    BuildBodyWithCall(rewriter, loc, func, func_ty, &reduce_op.body());
+
+    rewriter.replaceOp(op, reduce_op.getResults());
+
+    return success();
+  }
+};
+
+// Convert tf.XlaVariadicSort to mhlo.Sort
+class ConvertXlaVariadicSortOp
+    : public OpRewritePattern<TF::XlaVariadicSortOp> {
+ public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::XlaVariadicSortOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    ElementsAttr dimension;
+    matchPattern(op.dimension(), m_Constant(&dimension));
+    // Create the mhlo.sort op.
+    auto sort_op = rewriter.create<mhlo::SortOp>(
+        loc, op.inputs(), dimension.getValues<IntegerAttr>()[0].getInt(),
+        op.is_stable());
+    mlir::SymbolRefAttr func = op.comparator();
+    auto func_op = cast<mlir::FuncOp>(SymbolTable::lookupSymbolIn(
+        op->getParentOfType<mlir::ModuleOp>(), func));
+    auto func_ty = func_op.getType();
+    // Insert a call to the reducer in the region of the mhlo op.
+    BuildBodyWithCall(rewriter, loc, func, func_ty, &sort_op.comparator());
+
+    rewriter.replaceOp(op, sort_op.getResults());
+    return success();
+  }
+};
 }  // end namespace
 
 #include "tensorflow/compiler/mlir/xla/transforms/generated_legalize_tf.inc"
@@ -7068,6 +7165,7 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertCumsumOp,
     ConvertDiagPartOp,
     ConvertDynamicExpandDimsOp,
+    ConvertDynamicSqueezeOp,
     ConvertEinsumOp,
     ConvertRFFTOp,
     ConvertIRFFTOp,
@@ -7121,8 +7219,10 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertRandomShuffleOp,
     ConvertXlaShardingOp,
     ConvertXlaDynamicUpdateSliceOp,
-    ConvertXlaAllReduceOp,
     ConvertXlaReduceScatterOp,
+    ConvertXlaSortOp,
+    ConvertXlaVariadicReduceV2Op,
+    ConvertXlaVariadicSortOp,
     ConvertRollOp,
     ConvertLeakyReluOp,
     ConvertLeakyReluGradOp,

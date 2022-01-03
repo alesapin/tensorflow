@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <utility>
+
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "tensorflow/compiler/mlir/tfrt/jit/transforms/tf_cpurt_passes.h"
@@ -23,7 +26,6 @@ namespace {
 #define GEN_PASS_CLASSES
 #include "tensorflow/compiler/mlir/tfrt/jit/transforms/tf_cpurt_passes.h.inc"
 
-using mlir::ConstantIndexOp;
 using mlir::failure;
 using mlir::LogicalResult;
 using mlir::MLIRContext;
@@ -33,6 +35,7 @@ using mlir::PatternRewriter;
 using mlir::SmallVector;
 using mlir::success;
 using mlir::Value;
+using mlir::arith::ConstantIndexOp;
 using mlir::linalg::GenericOp;
 using mlir::linalg::LinalgOp;
 using mlir::linalg::LinalgTilingOptions;
@@ -54,7 +57,8 @@ struct TileCWisePattern : public mlir::OpInterfaceRewritePattern<LinalgOp> {
     if (failed(filter.checkAndNotify(rewriter, linalg_op))) return failure();
 
     auto tiled_linalg_op = tileLinalgOp(rewriter, linalg_op, options);
-    if (!tiled_linalg_op) return failure();
+    if (failed(tiled_linalg_op) || tiled_linalg_op.getValue().loops.empty())
+      return failure();
 
     TiledLoopOp tiled_loop =
         mlir::dyn_cast<TiledLoopOp>(*tiled_linalg_op.getValue().loops.front());
@@ -84,6 +88,10 @@ bool isNonTiledCwise(Operation *op) {
 }
 
 struct CodegenForCWisePass : public CodegenCWiseBase<CodegenForCWisePass> {
+  CodegenForCWisePass() = default;
+  explicit CodegenForCWisePass(int64_t tile_size) {
+    cwise_tile_size = tile_size;
+  }
   void runOnFunction() override {
     constexpr llvm::StringRef kTiledId = "tiled";
     auto func = getFunction();
@@ -91,14 +99,15 @@ struct CodegenForCWisePass : public CodegenCWiseBase<CodegenForCWisePass> {
     LinalgTilingOptions tiling_options;
     // Tile the innermost dimension by 8 for vectorization and scalarize the
     // other dimensions.
-    tiling_options.setTileSizeComputationFunction(
-        [](OpBuilder b, Operation *op) {
-          auto num_loops = llvm::cast<LinalgOp>(op).getNumLoops();
-          SmallVector<Value> tiles(num_loops,
-                                   b.create<ConstantIndexOp>(op->getLoc(), 1));
-          tiles.back() = b.create<ConstantIndexOp>(op->getLoc(), 8);
-          return tiles;
-        });
+    tiling_options.setTileSizeComputationFunction([&](OpBuilder b,
+                                                      Operation *op) {
+      auto num_loops = llvm::cast<LinalgOp>(op).getNumLoops();
+      SmallVector<Value> tiles(num_loops,
+                               b.create<ConstantIndexOp>(op->getLoc(), 1));
+      if (!tiles.empty())
+        tiles.back() = b.create<ConstantIndexOp>(op->getLoc(), cwise_tile_size);
+      return tiles;
+    });
     tiling_options.setLoopType(mlir::linalg::LinalgTilingLoopType::TiledLoops);
 
     auto filter = LinalgTransformationFilter(
@@ -124,6 +133,11 @@ struct CodegenForCWisePass : public CodegenCWiseBase<CodegenForCWisePass> {
 
 std::unique_ptr<mlir::FunctionPass> CreateCodegenStrategyForCWisePass() {
   return std::make_unique<CodegenForCWisePass>();
+}
+
+std::unique_ptr<mlir::FunctionPass> CreateCodegenStrategyForCWisePass(
+    int64_t cwise_tile_size) {
+  return std::make_unique<CodegenForCWisePass>(cwise_tile_size);
 }
 
 }  // namespace tensorflow

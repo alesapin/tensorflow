@@ -60,7 +60,8 @@ DenseElementsAttr GetScalarOfType(Type ty, int64_t raw_value) {
   if (auto float_ty = ty.dyn_cast<FloatType>()) {
     APFloat value(float_ty.getFloatSemantics(), raw_value);
     return DenseElementsAttr::get(scalar_ty, value);
-  } else if (auto int_ty = ty.dyn_cast<IntegerType>()) {
+  }
+  if (auto int_ty = ty.dyn_cast<IntegerType>()) {
     APInt value(int_ty.getWidth(), static_cast<int64_t>(raw_value), true);
     return DenseElementsAttr::get(scalar_ty, value);
   } else if (auto complex_ty = ty.dyn_cast<ComplexType>()) {
@@ -126,7 +127,8 @@ DenseElementsAttr GetScalarLimitOfType(Type ty, ScalarLimit limit) {
   if (auto float_ty = ty.dyn_cast<FloatType>()) {
     return DenseElementsAttr::get(scalar_ty,
                                   GetScalarLimitOfFloatType(float_ty, limit));
-  } else if (auto integer_ty = ty.dyn_cast<IntegerType>()) {
+  }
+  if (auto integer_ty = ty.dyn_cast<IntegerType>()) {
     return DenseElementsAttr::get(
         scalar_ty, GetScalarLimitOfIntegerType(integer_ty, limit));
   }
@@ -150,9 +152,10 @@ std::string LmhloToMhloOpName(llvm::StringRef op_name,
   return "";
 }
 
-bool IsSequenceStartingWith0(DenseIntElementsAttr attr) {
-  for (int64_t i = 0, e = attr.getNumElements(); i < e; ++i)
-    if (attr.getValue<IntegerAttr>(i).getInt() != i) return false;
+bool IsSequenceStartingWith0(Attribute attr) {
+  DenseIntElementsAttr denseAttr = attr.dyn_cast<DenseIntElementsAttr>();
+  for (int64_t i = 0, e = denseAttr.getNumElements(); i < e; ++i)
+    if (denseAttr.getValues<APInt>()[i].getSExtValue() != i) return false;
   return true;
 }
 

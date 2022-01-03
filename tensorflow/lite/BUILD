@@ -691,6 +691,7 @@ config_setting(
 
 cc_library(
     name = "tflite_with_xnnpack_enabled",
+    compatible_with = get_compatible_with_portable(),
     defines = ["TFLITE_BUILD_WITH_XNNPACK_DELEGATE"],
     visibility = ["//visibility:private"],
     deps = [
@@ -706,14 +707,9 @@ cc_library(
     # configuration conditions will make TFLite interpreter to apply XNNPACK
     # delegate by default.
     deps = select({
-        "//tensorflow:android": [":tflite_with_xnnpack_enabled"],
-        # XNNPACK delivers significant benefits w/ WASM and is already in use
-        # by most WASM clients.
-        "//tensorflow:emscripten": [":tflite_with_xnnpack_enabled"],
-        "//tensorflow:ios": [":tflite_with_xnnpack_enabled"],
         "//tensorflow:macos": [],
-        "//tensorflow:windows": [":tflite_with_xnnpack_enabled"],
-        "//conditions:default": [],
+        "//tensorflow:fuchsia": [],
+        "//conditions:default": [":tflite_with_xnnpack_enabled"],
     }),
 )
 
@@ -806,6 +802,21 @@ cc_test(
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/testing:util",
         "//third_party/eigen3",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Test subgraph.
+cc_test(
+    name = "subgraph_test",
+    size = "small",
+    srcs = [
+        "core/subgraph_test.cc",
+    ],
+    deps = [
+        ":framework",
+        "//tensorflow/lite/kernels:builtin_ops",
+        "//tensorflow/lite/testing:util",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -1014,8 +1025,18 @@ cc_library(
     copts = tflite_copts_warnings() + tflite_copts(),
     deps = [
         ":kernel_api",
+        ":macros",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/schema:schema_fbs",
+    ],
+)
+
+cc_library(
+    name = "create_op_resolver_header",
+    hdrs = ["create_op_resolver.h"],
+    deps = [
+        ":mutable_op_resolver",
+        ":op_resolver",
     ],
 )
 
@@ -1058,6 +1079,7 @@ cc_test(
     features = ["-dynamic_link_test_srcs"],  # see go/dynamic_link_test_srcs
     deps = [
         ":util",
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest_main",

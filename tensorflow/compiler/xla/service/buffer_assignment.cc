@@ -23,6 +23,7 @@ limitations under the License.
 #include <utility>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
@@ -35,6 +36,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_alias_analysis.h"
 #include "tensorflow/compiler/xla/service/hlo_buffer.h"
 #include "tensorflow/compiler/xla/service/hlo_live_range.h"
+#include "tensorflow/compiler/xla/service/hlo_op_metadata.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/service/hlo_value.h"
 #include "tensorflow/compiler/xla/shape_util.h"
@@ -204,7 +206,7 @@ Status GatherComputationsByAllocationType(
   return Status::OK();
 }
 
-string BufferAllocation::Slice::ToString() const {
+std::string BufferAllocation::Slice::ToString() const {
   return absl::StrCat("{index:", index(), ", offset:", offset_,
                       ", size:", size_, "}");
 }
@@ -313,8 +315,8 @@ static const HloInstruction* GetOutputInstruction(
   return nullptr;
 }
 
-string BufferAllocation::ToString() const {
-  string output;
+std::string BufferAllocation::ToString() const {
+  std::string output;
   StrAppendFormat(&output, "allocation %d: %p, size %d", index_, this, size());
   if (color() != 0) {
     StrAppend(&output, ", color ", color());
@@ -636,8 +638,7 @@ void BufferAssignment::CombineTempAllocations() {
       // The offset of each buffer in the combined allocation is computed from
       // the base offset of the allocation.
       int64_t alignment = color_alignment_(color);
-      const int64_t base =
-          RoundUpToNearest(combined_allocation->size(), alignment);
+      const int64_t base = RoundUpTo(combined_allocation->size(), alignment);
       combined_allocation->set_size(base + temp_allocation.size());
       for (const auto& buffer_offset_size : temp_allocation.assigned_buffers_) {
         const HloValue* value = buffer_offset_size.first;
@@ -724,8 +725,8 @@ Status BufferAssignment::ComputeSummaryStats() {
   return Status::OK();
 }
 
-string BufferAssignment::Stats::ToString() const {
-  string s;
+std::string BufferAssignment::Stats::ToString() const {
+  std::string s;
   StrAppendFormat(&s, "BufferAssignment stats:\n");
   StrAppendFormat(&s, "             parameter allocation: %10s\n",
                   HumanReadableNumBytes(parameter_allocation_bytes));
@@ -753,8 +754,8 @@ string BufferAssignment::Stats::ToString() const {
   return s;
 }
 
-string BufferAssignment::ToString() const {
-  string output;
+std::string BufferAssignment::ToString() const {
+  std::string output;
   absl::StrAppend(&output, "BufferAssignment:\n");
   std::vector<const HloValue*> used_values;
   int64_t total_size = 0;
@@ -775,23 +776,74 @@ string BufferAssignment::ToString() const {
   return output;
 }
 
-string BufferAssignment::ToVerboseString() const {
-  string output =
-      absl::StrCat("BufferAssignment OOM Debugging.\n", stats_.ToString());
-  for (const BufferAllocation& allocation : allocations_) {
-    std::vector<string> buf_strs;
-    buf_strs.reserve(allocation.assigned_buffers().size());
-    for (const auto& instruction_and_offset : allocation.assigned_buffers()) {
-      buf_strs.push_back(instruction_and_offset.first->ToString());
+// Returns the largest k buffers present at the point of peak memory usage
+// across allocations as a vector of pairs with their corresponding sizes.
+std::vector<std::pair<int64_t, const HloValue*>> TopKPeakBuffers(
+    uint64_t k, const std::vector<BufferAllocation> allocations) {
+  absl::btree_multimap<int64_t, const HloValue*> topk;
+  for (const BufferAllocation& allocation : allocations) {
+    for (const HloValue* value : allocation.PeakMemoryLogicalBuffers()) {
+      int64_t size = allocation.assigned_buffers().at(value).size;
+      if (topk.size() < k) {
+        topk.insert({size, value});
+      } else {
+        auto it = topk.begin();
+        if (size > it->first) {
+          topk.erase(it);
+          topk.insert({size, value});
+        }
+      }
     }
-    absl::StrAppend(&output, "\n", allocation.ToString(),
-                    "contains:", absl::StrJoin(buf_strs, ","));
   }
+
+  // map will iterate smallest first, so reverse it.
+  std::vector<std::pair<int64_t, const HloValue*>> topk_descending;
+  topk_descending.reserve(topk.size());
+  absl::c_reverse_copy(topk, std::back_inserter(topk_descending));
+  return topk_descending;
+}
+
+std::string BufferAssignment::ToVerboseString() const {
+  // TODO(loreno): make this tunable via flag.
+  const size_t kMaxBuffersToShow = 15;
+  std::string output =
+      absl::StrCat("BufferAssignment OOM Debugging.\n", stats_.ToString());
+
+  std::vector<std::pair<int64_t, const HloValue*>> peak_buffers =
+      TopKPeakBuffers(kMaxBuffersToShow, allocations_);
+  std::vector<std::string> buf_strs;
+  for (size_t i = 0; i < std::min(kMaxBuffersToShow, peak_buffers.size());
+       ++i) {
+    const HloValue* value = peak_buffers[i].second;
+    const HloInstruction* instr = value->instruction();
+    int64_t size = peak_buffers[i].first;
+    buf_strs.push_back(absl::StrCat("\n\tBuffer ", i + 1, ":\n\t\tSize: ",
+                                    xla::HumanReadableNumBytes(size)));
+    if (!instr->metadata().op_name().empty()) {
+      buf_strs.push_back(absl::StrCat(
+          "\n\t\tOperator: ", xla::OpMetadataToString(instr->metadata())));
+    }
+    if (instr->opcode() == HloOpcode::kParameter &&
+        (instr->parent() == instr->parent()->parent()->entry_computation())) {
+      // Special case on entry parameters as they sometimes have hundreds of
+      // indices in their shapes, and overwhelm the output.
+      buf_strs.push_back(absl::StrCat(
+          "\n\t\tEntry Parameter Subshape: ",
+          ShapeUtil::GetSubshape(instr->shape(), value->index()).ToString()));
+    } else {
+      // TODO(loreno): change this to a truncated string of the instruction.
+      buf_strs.push_back(
+          absl::StrCat("\n\t\tXLA Label: ", HloOpcodeString(instr->opcode()),
+                       "\n\t\tShape: ", value->shape().ToString()));
+    }
+    buf_strs.push_back("\n\t\t==========================\n");
+  }
+  absl::StrAppend(&output, "Peak buffers:", absl::StrJoin(buf_strs, ""));
   return output;
 }
 
-string BufferAssignment::BufferInfoString() const {
-  string binfo;
+std::string BufferAssignment::BufferInfoString() const {
+  std::string binfo;
   // Columns in buffer information:
   // buffer_id: int. This value can be used to match the allocation in
   // allocation information.
@@ -1519,17 +1571,44 @@ std::vector<const HloValue*> ComputePeakMemoryLogicalBuffers(
   }
   VLOG(1) << "Compute peak memory logical buffers";
 
+  // To properly account for shared buffers, we keep track of the number of
+  // instances of the same shared buffer are currently live, their canonical ids
+  // and the size we had returned when allocating the buffer so that we can
+  // return the -size when freeing the buffer.
+  absl::flat_hash_map<int64_t, int> num_outstanding_shared_buffers;
+  absl::flat_hash_map<int64_t, int64_t> shared_canonical_ids;
+  absl::flat_hash_map<int64_t, int64_t> allocated_sizes;
   // Returns how much the given event increases the total size of live
   // buffers. Can be negative.
-  auto memory_delta = [&id_to_value, &buffer_sizes](
-                          const HeapSimulatorTrace::Event& event) -> int64_t {
+  auto memory_delta = [&](const HeapSimulatorTrace::Event& event) -> int64_t {
     const HloValue* buffer = id_to_value.at(event.buffer_id());
     const int64_t buffer_size = buffer_sizes.at(buffer);
-    if (event.kind() == HeapSimulatorTrace::Event::ALLOC ||
-        event.kind() == HeapSimulatorTrace::Event::SHARE_WITH) {
+    if (event.kind() == HeapSimulatorTrace::Event::ALLOC) {
+      num_outstanding_shared_buffers[event.buffer_id()] = 1;
+      allocated_sizes[event.buffer_id()] = buffer_size;
       return buffer_size;
+    } else if (event.kind() == HeapSimulatorTrace::Event::SHARE_WITH) {
+      shared_canonical_ids[event.buffer_id()] = event.share_with_canonical_id();
+      if (++num_outstanding_shared_buffers[event.share_with_canonical_id()] ==
+          1) {
+        // This shared buffer is currently the only instance of the buffer with
+        // the canonical id. So we return the buffer size.
+        allocated_sizes[event.buffer_id()] = buffer_size;
+        return buffer_size;
+      }
+      // There are multiple instances of this buffer, so return 0.
+      allocated_sizes[event.buffer_id()] = 0;
+      return 0;
     } else if (event.kind() == HeapSimulatorTrace::Event::FREE) {
-      return -1 * buffer_size;
+      auto shared_canonical_id_it =
+          shared_canonical_ids.find(event.buffer_id());
+      // Decrement the outstanding instances of this buffer and return the
+      // -size.
+      int64_t buffer_id = (shared_canonical_id_it == shared_canonical_ids.end())
+                              ? event.buffer_id()
+                              : shared_canonical_id_it->second;
+      --num_outstanding_shared_buffers[buffer_id];
+      return -1 * allocated_sizes[event.buffer_id()];
     }
     LOG(FATAL) << "Unknown event kind: " << event.kind();
   };
@@ -1554,6 +1633,7 @@ std::vector<const HloValue*> ComputePeakMemoryLogicalBuffers(
   // maximal live set size.
   absl::flat_hash_set<const HloValue*> live_values;
   live_size = 0;
+  num_outstanding_shared_buffers.clear();
   for (const auto& event : heap_trace.events()) {
     if (!id_to_value.contains(event.buffer_id())) {
       // Skip as the buffer associated with this trace event is not placed into
@@ -1562,14 +1642,18 @@ std::vector<const HloValue*> ComputePeakMemoryLogicalBuffers(
       continue;
     }
     const HloValue* value = id_to_value.at(event.buffer_id());
-    if (event.kind() == HeapSimulatorTrace::Event::ALLOC ||
-        event.kind() == HeapSimulatorTrace::Event::SHARE_WITH) {
+    int64_t delta = memory_delta(event);
+    // To avoid including buffers that are aliases of each other to the peak
+    // buffers list, only add the buffers that memory_delta returns non-zero
+    // positive sizes. memory_delta returns 0 as the size for the buffer already
+    // has a live alias of itself.
+    if (delta > 0) {
       InsertOrDie(&live_values, value);
-    } else if (event.kind() == HeapSimulatorTrace::Event::FREE) {
+    } else if (delta < 0) {
       CHECK(ContainsKey(live_values, value));
       live_values.erase(value);
     }
-    live_size += memory_delta(event);
+    live_size += delta;
 
     if (live_size == max_live_size) {
       break;
