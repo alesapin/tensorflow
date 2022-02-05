@@ -41,16 +41,13 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_eliminate_hlo_implicit_broadcast(true);
   opts.set_xla_dump_hlo_as_html(false);
   opts.set_xla_dump_fusion_visualization(false);
-  opts.set_xla_dump_include_timestamp(true);
+  opts.set_xla_dump_include_timestamp(false);
   opts.set_xla_dump_max_hlo_modules(-1);
   opts.set_xla_dump_module_metadata(false);
 #ifdef ENABLE_MKL
   opts.set_xla_cpu_use_mkl_dnn(true);
 #endif  // ENABLE_MKL
   opts.set_xla_gpu_max_kernel_unroll_factor(4);
-  // Set cudnn batchnorm off by default; it does not provide a performance win
-  // on average.
-  opts.set_xla_gpu_use_cudnn_batchnorm(false);
 
   // Run all GPU work on one stream by default.  Using multiple streams
   // increases memory usage and we lack strong motivating benchmarks for tuning
@@ -422,12 +419,6 @@ static void AllocateFlags() {
       "xla_backend_extra_options", setter_for_xla_backend_extra_options, "",
       "Extra options to pass to a backend; comma-separated list of 'key=val' "
       "strings (=val may be omitted); no whitespace around commas."));
-  flag_objects->push_back(tensorflow::Flag(
-      "xla_gpu_use_cudnn_batchnorm",
-      bool_setter_for(&DebugOptions::set_xla_gpu_use_cudnn_batchnorm),
-      flag_values->xla_gpu_use_cudnn_batchnorm(),
-      "Allows the GPU backend to implement batchnorm HLOs using cudnn, rather "
-      "than expanding them to a soup of HLOs."));
   flag_objects->push_back(
       tensorflow::Flag("xla_cpu_use_mkl_dnn",
                        bool_setter_for(&DebugOptions::set_xla_cpu_use_mkl_dnn),

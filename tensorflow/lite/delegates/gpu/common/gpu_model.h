@@ -20,6 +20,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "tensorflow/lite/delegates/gpu/common/gpu_model_generated.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model_hints.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -102,6 +103,19 @@ struct GpuModel {
   absl::flat_hash_map<ValueId, TensorDescriptor> tensors;
   absl::flat_hash_map<ValueId, TensorDescriptor> const_tensors;
 };
+
+absl::Status GraphToGpuModel(const GraphFloat32& graph,
+                             const CreateGpuModelInfo& create_info,
+                             const GpuInfo& gpu_info, GpuModel* gpu_model);
+
+flatbuffers::Offset<data::GpuModel> Encode(
+    const GpuModel& gpu_model, flatbuffers::FlatBufferBuilder* builder);
+
+absl::Status Decode(const data::GpuModel* fb_gpu_model, GpuModel* gpu_model);
+
+// This transformations MUST be applied to graph for correct work of GpuModel
+// that will be created from graph
+absl::Status RunGraphTransformsForGpuModel(GraphFloat32* graph);
 
 }  // namespace gpu
 }  // namespace tflite

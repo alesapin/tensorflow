@@ -809,6 +809,11 @@ Status CheckWhileLayout(HloInstruction* while_inst,
   return Status::OK();
 }
 
+Status CheckOptimizationBarrierLayout(HloInstruction* inst) {
+  TF_RET_CHECK(LayoutsInShapesEqual(inst->operand(0)->shape(), inst->shape()));
+  return Status::OK();
+}
+
 Status CheckConditionalLayout(
     HloInstruction* instruction,
     absl::Span<const ComputationLayout> branch_computation_layouts) {
@@ -1087,6 +1092,9 @@ Status LayoutAssignment::CheckLayouts(HloModule* module) {
                   ->computation_layout(),
               FindOrDie(computation_layouts_, instruction->while_body())
                   ->computation_layout()));
+          break;
+        case HloOpcode::kOptimizationBarrier:
+          TF_RETURN_IF_ERROR(CheckOptimizationBarrierLayout(instruction));
           break;
         case HloOpcode::kConditional: {
           std::vector<ComputationLayout> branch_computation_layouts;
@@ -2409,7 +2417,6 @@ bool LayoutAssignment::InstructionCanChangeLayout(
     case HloOpcode::kCompare:
     case HloOpcode::kComplex:
     case HloOpcode::kConcatenate:
-    case HloOpcode::kConditional:
     case HloOpcode::kConvert:
     case HloOpcode::kCos:
     case HloOpcode::kAllGather:
@@ -2435,6 +2442,7 @@ bool LayoutAssignment::InstructionCanChangeLayout(
     case HloOpcode::kMultiply:
     case HloOpcode::kNegate:
     case HloOpcode::kNot:
+    case HloOpcode::kOptimizationBarrier:
     case HloOpcode::kOr:
     case HloOpcode::kXor:
     case HloOpcode::kPad:
@@ -2481,6 +2489,7 @@ bool LayoutAssignment::InstructionCanChangeLayout(
     case HloOpcode::kCall:
     case HloOpcode::kCollectivePermuteStart:
     case HloOpcode::kCollectivePermuteDone:
+    case HloOpcode::kConditional:
     case HloOpcode::kConstant:
     case HloOpcode::kConvolution:
     case HloOpcode::kCopy:

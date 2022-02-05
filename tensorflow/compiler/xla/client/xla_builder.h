@@ -40,7 +40,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stacktrace.h"
 
 namespace xla {
@@ -61,6 +60,8 @@ struct XlaBuilderFriend {
                             const Shape& shape);
 
   static HloInstructionProto* GetInstruction(XlaOp op);
+  static HloInstructionProto* GetInstructionByHandle(XlaBuilder* builder,
+                                                     int64_t handle);
 };
 
 }  // namespace internal
@@ -671,6 +672,8 @@ class XlaBuilder {
       const Literal* literal, CustomCallSchedule schedule,
       CustomCallApiVersion api_version);
 
+  XlaOp OptimizationBarrier(XlaOp operand);
+
   XlaOp Reduce(XlaOp operand, XlaOp init_value,
                const XlaComputation& computation,
                absl::Span<const int64_t> dimensions_to_reduce);
@@ -1257,6 +1260,7 @@ class XlaBuilder {
           output_operand_aliasing,
       const Literal* literal, Window window, ConvolutionDimensionNumbers dnums,
       CustomCallSchedule schedule, CustomCallApiVersion api_version);
+  friend XlaOp OptimizationBarrier(XlaOp operand);
   friend XlaOp Complex(XlaOp real, XlaOp imag,
                        absl::Span<const int64_t> broadcast_dimensions);
   friend XlaOp Conj(XlaOp operand);
@@ -2142,6 +2146,9 @@ XlaOp CustomCallWithConvDnums(
     const Literal* literal, Window window, ConvolutionDimensionNumbers dnums,
     CustomCallSchedule schedule = CustomCallSchedule::SCHEDULE_NONE,
     CustomCallApiVersion api_version = API_VERSION_ORIGINAL);
+
+// Enqueues an optimization barrier onto the computation.
+XlaOp OptimizationBarrier(XlaOp operand);
 
 // The following methods enqueue element-wise binary arithmetic operations
 // onto the computation. The shapes of the operands have to match unless one

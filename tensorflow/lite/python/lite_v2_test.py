@@ -83,11 +83,8 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
       _ = lite.TFLiteConverterV2.from_concrete_functions([root.f], root)
     self.assertIn('call get_concrete_function', str(error.exception))
 
-  @parameterized.named_parameters(
-      ('EnableMlirConverter', True),  # enable mlir
-      ('DisableMlirConverter', False))  # disable mlir
   @test_util.run_v2_only
-  def testFloat(self, enable_mlir_converter):
+  def testFloat(self):
     root = self._getSimpleVariableModel()
     input_data = tf.constant(1., shape=[1])
     concrete_func = root.f.get_concrete_function(input_data)
@@ -95,7 +92,6 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
     # Convert model.
     converter = lite.TFLiteConverterV2.from_concrete_functions([concrete_func],
                                                                root)
-    converter.experimental_new_converter = enable_mlir_converter
     tflite_model = converter.convert()
 
     # Check output value from converted model.
@@ -670,11 +666,8 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
       new_value = self._evaluateTFLiteModel(new_tflite, [input_data])
       self.assertAllClose(old_value, new_value, atol=1e-01)
 
-  @parameterized.named_parameters(
-      ('EnableMlirConverter', True),  # enable mlir
-      ('DisableMlirConverter', False))  # disable mlir
   @test_util.run_v2_only
-  def testEmbeddings(self, enable_mlir_converter):
+  def testEmbeddings(self):
     """Test model with embeddings."""
     input_data = tf.constant(
         np.array(np.random.random_sample((20)), dtype=np.int32))
@@ -701,7 +694,6 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
     # Convert model.
     converter = lite.TFLiteConverterV2.from_concrete_functions([concrete_func],
                                                                root)
-    converter.experimental_new_converter = enable_mlir_converter
     tflite_model = converter.convert()
 
     # Check values from converted model.
@@ -1238,11 +1230,8 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
         self.assertEqual(operator.version, 3)
         break
 
-  @parameterized.named_parameters(
-      ('EnableMlirConverter', True),  # enable mlir
-      ('DisableMlirConverter', False))  # disable mlir
   @test_util.run_v2_only
-  def testForceSelectTFOps(self, enable_mlir_converter):
+  def testForceSelectTFOps(self):
     root = self._getSimpleVariableModel()
     input_data = tf.constant(1., shape=[1])
     concrete_func = root.f.get_concrete_function(input_data)
@@ -1250,7 +1239,6 @@ class FromConcreteFunctionTest(lite_v2_test_util.ModelTest):
     # Convert model.
     converter = lite.TFLiteConverterV2.from_concrete_functions([concrete_func],
                                                                root)
-    converter.experimental_new_converter = enable_mlir_converter
     converter.target_spec.supported_ops = [
         tf.lite.OpsSet.SELECT_TF_OPS
     ]
@@ -2131,18 +2119,6 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     self._assertValidDebugInfo(converter._debug_info)
 
   @test_util.run_v2_only
-  def testFallbackPath(self):
-    """Test a SavedModel fallback path using old converter."""
-    saved_model_dir = self._createV1SavedModel(shape=[1, 16, 16, 3])
-
-    # Convert model and ensure model is not None.
-    converter = lite.TFLiteConverterV2.from_saved_model(saved_model_dir)
-    converter.experimental_new_converter = False
-    tflite_model = converter.convert()
-
-    self.assertTrue(tflite_model)
-
-  @test_util.run_v2_only
   def testNonStatefulConvLSTM2D(self):
     """Test saved model with non stateful ConvLSTM2D keras layer."""
     # Create keras model
@@ -2310,7 +2286,7 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     ])
     saved_model_dir = os.path.join(self.get_temp_dir(), 'dense_saved_model')
     save(model, saved_model_dir)
-    k_dense_bias_name = 'dense/bias'
+    k_dense_bias_name = 'sequential/dense/BiasAdd/ReadVariableOp'
     quantized_converter = tf.lite.TFLiteConverter.from_saved_model(
         saved_model_dir)
     quantized_converter.optimizations = [lite.Optimize.DEFAULT]
@@ -2349,14 +2325,14 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     self.assertEqual(bias_type, dense_bias['dtype'])
 
   @parameterized.named_parameters(
-      ('_PerChannelMlirDynamicRangeQuant', True, False),
-      ('_PerChannelTocoDynamicRangeQuant', False, False),
-      ('_PerTensorMlirDynamicRangeQuant', True, True),
-      ('_PerTensorTocoDynamicRangeQuant', False, True))
+      ('_Int8PerChannelMlirDynamicRangeQuant', True, False, False),
+      ('_Int8PerChannelTocoDynamicRangeQuant', False, False, False),
+      ('_Int8PerTensorMlirDynamicRangeQuant', True, True, False),
+      ('_Int8PerTensorTocoDynamicRangeQuant', False, True, False),
+      ('_Float16DynamicRangeQuant', True, False, True))
   @test_util.run_v2_only
-  def testMlirDynamicRangeQuantization(self,
-                                       enable_new_dynamic_range_quantizer,
-                                       disable_per_channel):
+  def testMlirDynamicRangeQuantization(self, enable_new_dynamic_range_quantizer,
+                                       disable_per_channel, test_float16):
     num_filters = 1024
     conv_name = 'sequential/conv2d/Conv2D1'
     model = tf.keras.models.Sequential(
@@ -2371,6 +2347,8 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     converter._experimental_new_dynamic_range_quantizer = (
         enable_new_dynamic_range_quantizer)
     converter._experimental_disable_per_channel = disable_per_channel
+    if test_float16:
+      converter.target_spec.supported_types = [tf.float16]
     quantized_tflite_model = converter.convert()
     self.assertIsNotNone(quantized_tflite_model)
 
@@ -2379,7 +2357,11 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     quantized_weight = next(
         d for d in interpreter.get_tensor_details() if d['name'] == conv_name)
     quant_params = quantized_weight['quantization_parameters']
-    expected_num_params = 1 if disable_per_channel else num_filters
+
+    if test_float16:
+      expected_num_params = 0
+    else:
+      expected_num_params = 1 if disable_per_channel else num_filters
     self.assertLen(quant_params['scales'], expected_num_params)
     self.assertLen(quant_params['zero_points'], expected_num_params)
 
@@ -2387,9 +2369,10 @@ class FromSavedModelTest(lite_v2_test_util.ModelTest):
     output_details = interpreter.get_output_details()
     self.assertEqual(np.float32, input_details[0]['dtype'])
     self.assertEqual(np.float32, output_details[0]['dtype'])
-    # TODO(b/204288134): add test parameter for float16 dynamic range
-    # quantization.
-    self.assertEqual(np.int8, quantized_weight['dtype'])
+    if test_float16:
+      self.assertEqual(np.float16, quantized_weight['dtype'])
+    else:
+      self.assertEqual(np.int8, quantized_weight['dtype'])
 
 
 class FromKerasModelTest(lite_v2_test_util.ModelTest):
@@ -2552,14 +2535,15 @@ class FromKerasModelTest(lite_v2_test_util.ModelTest):
         list(signature_defs['serving_default']['outputs']), ['output_tensor'])
 
   @parameterized.named_parameters(
-      ('_PerChannelMlirDynamicRangeQuant', True, False),
-      ('_PerChannelTocoDynamicRangeQuant', False, False),
-      ('_PerTensorMlirDynamicRangeQuant', True, True),
-      ('_PerTensorTocoDynamicRangeQuant', False, True))
+      ('_PerChannelMlirDynamicRangeQuant', True, False, False),
+      ('_PerChannelTocoDynamicRangeQuant', False, False, False),
+      ('_PerTensorMlirDynamicRangeQuant', True, True, False),
+      ('_PerTensorTocoDynamicRangeQuant', False, True, False),
+      ('_Float16DynamicRangeQuant', True, False, True))
   @test_util.run_v2_only
   def testMlirDynamicRangeQuantization(self,
                                        enable_new_dynamic_range_quantizer,
-                                       disable_per_channel):
+                                       disable_per_channel, test_float16):
     num_filters = 1024
     conv_name = 'sequential/conv2d/Conv2D1'
     model = tf.keras.models.Sequential(
@@ -2572,6 +2556,8 @@ class FromKerasModelTest(lite_v2_test_util.ModelTest):
     converter._experimental_new_dynamic_range_quantizer = (
         enable_new_dynamic_range_quantizer)
     converter._experimental_disable_per_channel = disable_per_channel
+    if test_float16:
+      converter.target_spec.supported_types = [tf.float16]
     quantized_tflite_model = converter.convert()
     self.assertIsNotNone(quantized_tflite_model)
 
@@ -2580,7 +2566,11 @@ class FromKerasModelTest(lite_v2_test_util.ModelTest):
     quantized_weight = next(
         d for d in interpreter.get_tensor_details() if d['name'] == conv_name)
     quant_params = quantized_weight['quantization_parameters']
-    expected_num_params = 1 if disable_per_channel else num_filters
+
+    if test_float16:
+      expected_num_params = 0
+    else:
+      expected_num_params = 1 if disable_per_channel else num_filters
     self.assertLen(quant_params['scales'], expected_num_params)
     self.assertLen(quant_params['zero_points'], expected_num_params)
 
@@ -2588,9 +2578,10 @@ class FromKerasModelTest(lite_v2_test_util.ModelTest):
     output_details = interpreter.get_output_details()
     self.assertEqual(np.float32, input_details[0]['dtype'])
     self.assertEqual(np.float32, output_details[0]['dtype'])
-    # TODO(b/204288134): add test parameter for float16 dynamic range
-    # quantization.
-    self.assertEqual(np.int8, quantized_weight['dtype'])
+    if test_float16:
+      self.assertEqual(np.float16, quantized_weight['dtype'])
+    else:
+      self.assertEqual(np.int8, quantized_weight['dtype'])
 
   @parameterized.named_parameters([
       ('{}BitWeightOnly={}LowBit={}'.format(num_bits, weight_only, low_bit),

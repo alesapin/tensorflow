@@ -25,7 +25,7 @@ limitations under the License.
 #include "absl/synchronization/notification.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/distributed_runtime/coordination/coordination_client.h"
-#include "tensorflow/core/framework/device_attributes.pb.h"
+#include "tensorflow/core/distributed_runtime/coordination/coordination_service_error_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/macros.h"
@@ -84,7 +84,7 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   void RegisterWorker(const std::string& job_name, int task_id,
                       uint64 incarnation, StatusCallback done) override;
   void WaitForAllTasks(const std::string& job_name, int task_id,
-                       std::vector<DeviceAttributes> devices,
+                       const CoordinationServiceDeviceInfo& devices,
                        StatusCallback done) override;
   Status RecordHeartbeat(const std::string& job_name, int task_id,
                          uint64 incarnation) override;
@@ -98,11 +98,12 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   Status DeleteKeyValue(const std::string& key) override;
 
  private:
-  const std::vector<DeviceAttributes>& ListClusterDevices() override
+  const CoordinationServiceDeviceInfo& ListClusterDevices() override
       TF_EXCLUSIVE_LOCKS_REQUIRED(state_mu_);
   void StartCheckStaleness();
   void Stop();
-  void PropagateError(const std::string& job, int task_id, Status error)
+  void PropagateError(const std::string& job, int task_id, Status error,
+                      bool is_reported_by_agent = false)
       TF_LOCKS_EXCLUDED(state_mu_);
   void DoneClusterRegistration(Status s) TF_EXCLUSIVE_LOCKS_REQUIRED(state_mu_);
 
@@ -157,7 +158,7 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   condition_variable cluster_registered_cv_;
   absl::flat_hash_map<std::string, std::unique_ptr<TaskState>> cluster_state_
       TF_GUARDED_BY(state_mu_);
-  std::vector<DeviceAttributes> cluster_devices_ TF_GUARDED_BY(state_mu_);
+  CoordinationServiceDeviceInfo cluster_devices_ TF_GUARDED_BY(state_mu_);
   int cluster_pending_workers_ TF_GUARDED_BY(state_mu_);
 
   mutex kv_mu_;
@@ -201,9 +202,9 @@ Status CoordinationServiceStandaloneImpl::TaskState::RecordHeartbeat(
     uint64 task_incarnation) {
   if (!status_.ok()) return status_;
   if (task_incarnation != task_incarnation_) {
-    return errors::Aborted("Incarnation ID mismatch: expecting ",
-                           task_incarnation_, " but got ", task_incarnation,
-                           ". This means the remote task has restarted.");
+    return MakeCoordinationError(errors::Aborted(
+        "Incarnation ID mismatch: expecting ", task_incarnation_, " but got ",
+        task_incarnation, ". This means the remote task has restarted."));
   }
   mutex_lock l(last_heartbeat_mu_);
   last_heartbeat_us_ = Env::Default()->NowMicros();
@@ -285,10 +286,10 @@ void CoordinationServiceStandaloneImpl::StartCheckStaleness() {
               VLOG(1) << "Checking staleness for " << worker_state.first
                       << " stale?=" << is_stale;
               if (is_stale) {
-                status = errors::Unavailable(
+                status = MakeCoordinationError(errors::Unavailable(
                     "Task ", worker_state.first,
                     " heartbeat timeout. This indicates that the remote task "
-                    "has failed, got preempted, or crashed unexpectedly.");
+                    "has failed, got preempted, or crashed unexpectedly."));
                 worker_state.second->SetError(status);
                 DeviceNameUtils::ParseFullName(worker_state.first, &parsed);
                 break;
@@ -329,15 +330,17 @@ void CoordinationServiceStandaloneImpl::RegisterWorker(
   {
     mutex_lock l(state_mu_);
     if (!cluster_state_.contains(task_name)) {
-      done(errors::InvalidArgument(
+      done(MakeCoordinationError(errors::InvalidArgument(
           "Unexpected worker registered with job_name=", job_name,
-          ", task_id=", task_id));
+          ", task_id=", task_id)));
       // Note: unexpected task register should not be propagated to other tasks
       return;
     } else if (cluster_state_[task_name]->GetState() ==
                TaskState::State::CONNECTED) {
-      Status s = errors::Aborted("Duplicate worker registration with job_name=",
-                                 job_name, ", task_id=", task_id);
+      Status s = MakeCoordinationError(
+          errors::Aborted("Duplicate worker registration with job_name=",
+                          job_name, ", task_id=", task_id),
+          job_name, task_id);
       cluster_state_[task_name]->SetError(s);
       status = s;
       DoneClusterRegistration(s);
@@ -354,26 +357,25 @@ void CoordinationServiceStandaloneImpl::RegisterWorker(
 
 void CoordinationServiceStandaloneImpl::WaitForAllTasks(
     const std::string& job_name, int task_id,
-    std::vector<DeviceAttributes> devices, StatusCallback done) {
+    const CoordinationServiceDeviceInfo& devices, StatusCallback done) {
   const std::string& task_name = GetTaskName(job_name, task_id);
   mutex_lock l(state_mu_);
   if (!cluster_state_.contains(task_name)) {
-    done(errors::InvalidArgument("Unexpected worker request with job_name=",
-                                 job_name, ", task_id=", task_id));
+    done(MakeCoordinationError(errors::InvalidArgument(
+        "Unexpected worker request with job_name=", job_name,
+        ", task_id=", task_id)));
     return;
   }
   DCHECK_GT(cluster_pending_workers_, 0);
   cluster_state_[task_name]->SetRegisteredCallback(std::move(done));
-  cluster_devices_.insert(cluster_devices_.end(),
-                          std::make_move_iterator(devices.begin()),
-                          std::make_move_iterator(devices.end()));
+  cluster_devices_.MergeFrom(devices);
   cluster_pending_workers_--;
   if (cluster_pending_workers_ == 0) {
     DoneClusterRegistration(Status::OK());
   }
 }
 
-const std::vector<DeviceAttributes>&
+const CoordinationServiceDeviceInfo&
 CoordinationServiceStandaloneImpl::ListClusterDevices() {
   return cluster_devices_;
 }
@@ -393,17 +395,18 @@ Status CoordinationServiceStandaloneImpl::ReportTaskError(
   {
     mutex_lock l(state_mu_);
     if (!cluster_state_.contains(task_name)) {
-      return errors::InvalidArgument("Unexpected worker request with job_name=",
-                                     job_name, ", task_id=", task_id);
+      return MakeCoordinationError(errors::InvalidArgument(
+          "Unexpected worker request with job_name=", job_name,
+          ", task_id=", task_id));
     } else if (cluster_state_[task_name]->GetState() !=
                TaskState::State::CONNECTED) {
-      return errors::FailedPrecondition(
-          "The task is not connected or already has an error.");
+      return MakeCoordinationError(errors::FailedPrecondition(
+          "The task is not connected or already has an error."));
     } else {
       cluster_state_[task_name]->SetError(error);
     }
   }
-  PropagateError(job_name, task_id, error);
+  PropagateError(job_name, task_id, error, /*is_reported_by_agent=*/true);
   return Status::OK();
 }
 
@@ -414,16 +417,16 @@ Status CoordinationServiceStandaloneImpl::RecordHeartbeat(
   {
     mutex_lock l(state_mu_);
     if (!cluster_state_.contains(task_name)) {
-      return errors::InvalidArgument(
+      return MakeCoordinationError(errors::InvalidArgument(
           "Unexpected worker heartbeat with job_name=", job_name,
-          ", task_id=", task_id);
+          ", task_id=", task_id));
     } else if (!cluster_state_[task_name]->GetStatus().ok()) {
       return cluster_state_[task_name]->GetStatus();
     } else if (cluster_state_[task_name]->GetState() ==
                TaskState::State::DISCONNECTED) {
-      return errors::InvalidArgument(
+      return MakeCoordinationError(errors::InvalidArgument(
           "Task with job_name=", job_name, ", task_id=", task_id,
-          " must be registered before sending heartbeat messages");
+          " must be registered before sending heartbeat messages"));
     }
     s = cluster_state_[task_name]->RecordHeartbeat(incarnation);
   }
@@ -434,13 +437,16 @@ Status CoordinationServiceStandaloneImpl::RecordHeartbeat(
 }
 
 void CoordinationServiceStandaloneImpl::PropagateError(
-    const std::string& job_name, int task_id, Status error) {
+    const std::string& job_name, int task_id, Status error,
+    bool is_reported_by_agent) {
   assert(!error.ok());
   ReportErrorToAgentRequest request;
-  request.set_source_job(job_name);
-  request.set_source_task(task_id);
   request.set_error_code(error.code());
   request.set_error_message(error.error_message());
+  CoordinationServiceError* payload = request.mutable_error_payload();
+  payload->set_job(job_name);
+  payload->set_task(task_id);
+  payload->set_is_reported_error(is_reported_by_agent);
   std::vector<std::shared_ptr<Notification>> notifications;
 
   std::vector<absl::string_view> task_names;
@@ -510,7 +516,8 @@ Status CoordinationServiceStandaloneImpl::InsertKeyValue(
   const std::string& norm_key = NormalizeKey(key);
   mutex_lock l(kv_mu_);
   if (kv_store_.find(norm_key) != kv_store_.end()) {
-    return errors::InvalidArgument("Config key ", key, " already exists.");
+    return MakeCoordinationError(
+        errors::AlreadyExists("Config key ", key, " already exists."));
   }
   kv_store_.emplace(norm_key, value);
   auto iter = get_cb_.find(norm_key);

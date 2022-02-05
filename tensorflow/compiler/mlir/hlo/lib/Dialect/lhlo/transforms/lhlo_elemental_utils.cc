@@ -183,7 +183,7 @@ Value elementalLowerImplForBroadcastInDimOps(OpBuilder* b, Location loc,
             loc, b->getIndexType(), b->getIntegerAttr(b->getIndexType(), 0));
         auto dim_size_is_1 = b->create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::eq, dim_size, one);
-        input_index.push_back(b->create<mlir::SelectOp>(
+        input_index.push_back(b->create<mlir::arith::SelectOp>(
             loc, dim_size_is_1, zero, output_index[dim]));
       } else {
         // we know this dim is not to be broadcasted at compile time
@@ -255,7 +255,7 @@ memref::ReinterpretCastOp createMemRef1DReinterpretCast(OpBuilder& b,
   Value zero = b.create<mlir::arith::ConstantOp>(
       loc, b.getIndexType(), b.getIntegerAttr(b.getIndexType(), 0));
   auto memref_1d_type =
-      MemRefType::get({MemRefType::kDynamicSize}, memref_ty.getElementType(),
+      MemRefType::get({ShapedType::kDynamicSize}, memref_ty.getElementType(),
                       b.getMultiDimIdentityMap(1), memref_ty.getMemorySpace());
   return b.create<memref::ReinterpretCastOp>(
       loc, memref_1d_type, memref, zero, ValueRange{size}, ValueRange{stride});

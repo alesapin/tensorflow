@@ -2,9 +2,37 @@ syntax = "proto3";
 
 package tensorflow;
 
+import "tensorflow/compiler/xla/pjrt/distributed/protocol.proto";
 import "tensorflow/core/framework/device_attributes.proto";
 
 option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/protobuf/for_core_protos_go_proto";
+
+// Status payload for all coordination service errors.
+// Note: an empty proto may be set if the error is triggered by the task's own
+// agent calls (i.e. not propagated by the service from another remote task).
+message CoordinationServiceError {
+  // Denotes which worker hit the error. If unset, the error originated from the
+  // same task that is processing this error.
+  string job = 1;
+  int32 task = 2;
+  // If true, error is reported via the agent API by the user (and not an
+  // internal service error).
+  bool is_reported_error = 3;
+}
+
+// Represent device information from different runtimes.
+message TfDeviceList {
+  repeated DeviceAttributes devices = 1;
+}
+message XlaDeviceList {
+  xla.GlobalTopologyProto devices = 1;
+}
+message CoordinationServiceDeviceInfo {
+  oneof type {
+    TfDeviceList tf = 1;
+    XlaDeviceList xla = 2;
+  }
+}
 
 // Request and response messages for registering a worker to the cluster leader.
 // Use `job` and `task` to represent the role of the worker, and use
@@ -40,22 +68,27 @@ message HeartbeatResponse {
 message WaitForAllTasksRequest {
   string job = 1;
   int32 task = 2;
+  // Removed field that specifically used TF device info.
+  reserved 3;
   // All local device attributes on the request sender.
-  repeated DeviceAttributes local_device_attributes = 3;
+  CoordinationServiceDeviceInfo local_device_info = 4;
 }
 
 message WaitForAllTasksResponse {
   fixed64 leader_incarnation = 1;
+  // Removed field that specifically used TF device info.
+  reserved 2;
   // All devices in the cluster.
-  repeated DeviceAttributes cluster_device_attributes = 2;
+  CoordinationServiceDeviceInfo cluster_device_info = 3;
 }
 
 // Request and response messages for reporting errors to task.
 message ReportErrorToAgentRequest {
   int32 error_code = 1;
   string error_message = 2;
-  string source_job = 3;
-  int32 source_task = 4;
+  // Removed fields that are embedded in payload.
+  reserved 3, 4;
+  CoordinationServiceError error_payload = 5;
 }
 
 message ReportErrorToAgentResponse {}

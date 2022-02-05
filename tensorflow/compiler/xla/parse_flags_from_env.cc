@@ -25,17 +25,15 @@ limitations under the License.
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/util/command_line_flags.h"
 
 namespace xla {
@@ -181,17 +179,17 @@ static void SetArgvFromEnv(absl::string_view envvar, EnvArgv* a) {
 
 // The simulated argv[] parsed from the environment, one for each different
 // environment variable we've seen.
-static std::unordered_map<std::string, EnvArgv>& EnvArgvs() {
-  static auto* env_argvs = new std::unordered_map<std::string, EnvArgv>();
+static absl::flat_hash_map<std::string, EnvArgv>& EnvArgvs() {
+  static auto* env_argvs = new absl::flat_hash_map<std::string, EnvArgv>();
   return *env_argvs;
 }
 
 // Used to protect accesses to env_argvs.
-static tensorflow::mutex env_argv_mu(tensorflow::LINKER_INITIALIZED);
+static absl::Mutex env_argv_mu(absl::kConstInit);
 
 bool ParseFlagsFromEnvAndDieIfUnknown(
     absl::string_view envvar, const std::vector<tensorflow::Flag>& flag_list) {
-  tensorflow::mutex_lock lock(env_argv_mu);
+  absl::MutexLock lock(&env_argv_mu);
   auto* env_argv = &EnvArgvs()[std::string(envvar)];
   SetArgvFromEnv(envvar, env_argv);  // a no-op if already initialized
 
@@ -242,7 +240,7 @@ bool ParseFlagsFromEnvAndDieIfUnknown(
 // internal locations of the argc and argv constructed from the environment.
 void ResetFlagsFromEnvForTesting(absl::string_view envvar, int** pargc,
                                  std::vector<char*>** pargv) {
-  tensorflow::mutex_lock lock(env_argv_mu);
+  absl::MutexLock lock(&env_argv_mu);
   EnvArgvs().erase(std::string(envvar));
   auto& env_argv = EnvArgvs()[std::string(envvar)];
   *pargc = &env_argv.argc;

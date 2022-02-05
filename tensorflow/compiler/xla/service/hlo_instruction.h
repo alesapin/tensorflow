@@ -28,11 +28,13 @@ limitations under the License.
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/hash/hash.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -54,7 +56,6 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/iterator_range.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/protobuf.h"
 
 namespace xla {
@@ -133,8 +134,7 @@ class HloPrintOptions {
   // Options to produce a fingerprint of an HLO.
   static HloPrintOptions Fingerprint() {
     return HloPrintOptions()
-        .set_print_subcomputation_mode(
-            PrintSubcomputationMode::kNonSequentialBodies)
+        .set_print_subcomputation_mode(PrintSubcomputationMode::kFullBodies)
         .set_print_metadata(false)
         .set_print_backend_config(false)
         .set_print_infeed_outfeed_config(false)
@@ -1284,15 +1284,25 @@ class HloInstruction {
   // information on opcode, shape, operands, and typically a root instruction.
   // This function returns the same hash value for equivalent HLO instructions,
   // with respect to HloInstruction::Identical() method.
-  //
-  // Uses hash_operand function to compute hash values of its operands.
-  // At the very top level, hash_operand should be non-recursive to prevent
-  // non-termination.
-  uint64_t Hash(
-      const std::function<uint64_t(const HloInstruction*)>& hash_operand) const;
+  // TODO(majnemer): Make the comment here more crisp & accurate.
+  template <typename H>
+  friend H AbslHashValue(H h, const HloInstruction& hlo) {
+    h = H::combine(std::move(h), hlo.opcode(), hlo.shape());
 
-  // Calls the above method with non-recursive hash_operand function.
-  uint64_t Hash() const;
+    if (!hlo.IsCrossModuleAllReduce()) {
+      for (size_t i = 0; i < hlo.operands().size(); ++i) {
+        h = H::combine(std::move(h), hlo.operand(i)->shape());
+      }
+      h = H::combine(std::move(h), hlo.operand_count());
+    }
+
+    if (hlo.opcode() == HloOpcode::kFusion) {
+      h = H::combine(std::move(h), *hlo.fused_expression_root(),
+                     hlo.fusion_kind(), hlo.fused_instruction_count(),
+                     hlo.fused_parameters().size());
+    }
+    return h;
+  }
 
   // Returns whether the instruction has a constant operand.
   bool HasConstantOperand() const;
@@ -1618,9 +1628,7 @@ class HloInstruction {
   bool IsElementwiseBinary() const;
 
   // Returns whether this instruction may reuse elements of its `i`th operand.
-  bool ReusesOperandElements(int64_t i) const {
-    return OperandElementUse(i) == UseKind::kReuse;
-  }
+  bool ReusesOperandElements(int64_t i) const;
 
   // Returns the indices that the given operand appear in the operand list of
   // this instruction. Note that an instruction can use the same operand
@@ -2008,6 +2016,7 @@ class HloInstruction {
 
   // Delegates to HloCustomCallInstruction::custom_call_target.
   const std::string& custom_call_target() const;
+  void set_custom_call_target(absl::string_view target);
 
   // Delegates to HloPadInstruction::padding_config.
   const PaddingConfig& padding_config() const;
@@ -2061,38 +2070,6 @@ class HloInstruction {
   // Old methods kept for smooth subclassing transition END.
 
  protected:
-  // Indicates how an instruction uses a value (such as an operand).
-  //
-  // Does it (a) not use it, (b) use it, or (c) use it multiple times?
-  //
-  // In the kUse case (i.e. (b)) we may either (i) use the value elementwise, or
-  // (ii) use it after having permuted it somehow, e.g. through a reshape.  If
-  // the use is a permuting use, we set permutation_instr to the instruction
-  // that did the permuting.
-  struct UseKind {
-    enum Kind { kReuse, kUse, kNoUse };
-
-    // Creates a UseKind that represents a use that permutes an instruction's
-    // elements according to the given instruction.
-    static UseKind Permuting(const HloInstruction* permutation_instr) {
-      UseKind k(kUse);
-      k.permutation_instr = permutation_instr;
-      return k;
-    }
-
-    UseKind(Kind kind)  // NOLINT intentionally nonexplicit
-        : kind(kind), permutation_instr(nullptr) {}
-
-    bool friend operator==(UseKind a, Kind b) { return a.kind == b; }
-    bool friend operator==(Kind a, UseKind b) { return b == a; }
-
-    Kind kind;
-    const HloInstruction* permutation_instr;
-  };
-
-  // Helper class for computing OperandElementUse for kFusion.
-  class FusionReusesParamElements;
-
   // Internal constructor for a given opcode/shape, other fields must be filled
   // by factory methods.
   HloInstruction(HloOpcode opcode, const Shape& shape);
@@ -2176,10 +2153,6 @@ class HloInstruction {
       const std::function<bool(const HloComputation*, const HloComputation*)>&
           eq_computations) const;
 
-  // Generates a hash value specific to a particular type of an instruction.
-  // This function typically considers the inner root instruction.
-  virtual uint64_t InnerHash() const;
-
   // Creates an n-ary elementwise operation.
   static std::unique_ptr<HloInstruction> CreateNary(
       const Shape& shape, HloOpcode opcode,
@@ -2190,9 +2163,6 @@ class HloInstruction {
 
   // Removes a user for this instruction.
   void RemoveUser(HloInstruction* user);
-
-  // Returns how this instruction uses elements of its operand at operand_num.
-  UseKind OperandElementUse(int64_t operand_num) const;
 
   // Helper for implementing backend_config().  Parses backend_config_ into the
   // given proto.

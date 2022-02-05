@@ -218,6 +218,11 @@ Status ShapeVerifier::HandleCholesky(HloInstruction* hlo) {
   return CheckShape(hlo, expected);
 }
 
+Status ShapeVerifier::HandleOptimizationBarrier(HloInstruction* hlo) {
+  TF_RETURN_IF_ERROR(CheckOperandCount(hlo, 1));
+  return CheckShape(hlo, hlo->operand(0)->shape());
+}
+
 // Checks that `hlo`'s set of ReplicaGroups:
 //
 //  - names each replica 0 through n-1 exactly once (where n is either number of
@@ -1427,6 +1432,7 @@ Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
     case HloOpcode::kDomain:
     case HloOpcode::kFusion:
     case HloOpcode::kGetTupleElement:
+    case HloOpcode::kOptimizationBarrier:
     case HloOpcode::kInfeed:
     case HloOpcode::kOutfeed:
     case HloOpcode::kParameter:
@@ -1542,6 +1548,7 @@ Status ShapeVerifier::CheckShape(const HloInstruction* instruction,
       case HloOpcode::kGetTupleElement:
       case HloOpcode::kInfeed:
       case HloOpcode::kOutfeed:
+      case HloOpcode::kOptimizationBarrier:
       case HloOpcode::kParameter:
       case HloOpcode::kRecv:
       case HloOpcode::kRecvDone:

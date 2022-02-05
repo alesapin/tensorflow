@@ -75,7 +75,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/window_util.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/lib/core/bits.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/platform/logging.h"
@@ -93,9 +92,9 @@ IrEmitter::IrEmitter(mlir::MLIRContext* mlir_context,
                      const HloModule& hlo_module,
                      const BufferAssignment& assignment,
                      llvm::Module* llvm_module,
-                     std::unordered_map<const HloInstruction*, int64_t>
+                     absl::flat_hash_map<const HloInstruction*, int64_t>
                          instruction_to_profile_idx,
-                     std::unordered_map<const HloComputation*, int64_t>
+                     absl::flat_hash_map<const HloComputation*, int64_t>
                          computation_to_profile_idx,
                      absl::flat_hash_map<const HloComputation*, bool>
                          computation_transitively_contains_custom_call,
@@ -1535,7 +1534,7 @@ IrEmitter::ShardedVectorType IrEmitter::CreateShardedVectorType(
   llvm::Type* element_ir_type =
       llvm_ir::PrimitiveTypeToIrType(element_type, module_);
 
-  for (int i = 0, e = 1 + tensorflow::Log2Ceiling(element_count); i < e; i++) {
+  for (int i = 0, e = 1 + Log2Ceiling(element_count); i < e; i++) {
     // For every power of two present in element_count, we generate one or more
     // vector or scalar types.
     const unsigned current_size_fragment = 1u << i;
@@ -2906,7 +2905,7 @@ Status IrEmitter::FinishVisit(HloInstruction* root) {
 template <typename T>
 llvm::Value* IrEmitter::GetProfileCounterCommon(
     const T& hlo,
-    const std::unordered_map<const T*, int64_t>& profile_index_map) {
+    const absl::flat_hash_map<const T*, int64_t>& profile_index_map) {
   auto it = profile_index_map.find(&hlo);
   if (it == profile_index_map.end()) {
     return nullptr;

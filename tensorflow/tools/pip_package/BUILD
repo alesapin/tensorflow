@@ -41,6 +41,9 @@ transitive_hdrs(
         "//tensorflow/c/experimental/grappler:grappler_hdrs",
         "//tensorflow/c:kernels_hdrs",
         "//tensorflow/c:ops_hdrs",
+        # TODO(mihaimaruseac): Revisit these after cc_shared_library everywhere
+        "//tensorflow/cc:client_session",
+        "//tensorflow/cc:cc_ops",
         # WARNING: None of the C/C++ code under python/ has any API guarantees, and TF team
         # reserves the right to change APIs and other header-level interfaces.  If your custom
         # op uses these headers, it may break when users upgrade their version of tensorflow.
@@ -125,6 +128,7 @@ COMMON_PIP_DEPS = [
     "//tensorflow/python/ops/ragged:ragged_tensor_test_ops",
     "//tensorflow/python/debug:debug_pip",
     "//tensorflow/python/distribute:combinations",
+    "//tensorflow/python/distribute/failure_handling:failure_handling_lib",
     "//tensorflow/python/distribute:multi_process_runner",
     "//tensorflow/python/eager:eager_pip",
     "//tensorflow/python/keras:combinations",
@@ -259,7 +263,6 @@ filegroup(
         "absl_py",
         [
             "@absl_py//:LICENSE",
-            "@absl_py//absl/third_party/unittest3_backport:LICENSE",
         ],
     ) + if_not_system_lib(
         "com_github_grpc_grpc",

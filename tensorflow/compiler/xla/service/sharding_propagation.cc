@@ -166,6 +166,7 @@ const HloInstruction* PickRepresentativeOperand(
     case HloOpcode::kMap:
     case HloOpcode::kPad:
     case HloOpcode::kPower:
+    case HloOpcode::kOptimizationBarrier:
     case HloOpcode::kReverse:
     case HloOpcode::kSlice:
     case HloOpcode::kShiftLeft:
@@ -332,6 +333,7 @@ bool SupportSpatialPartitioning(
     case HloOpcode::kConditional:
     case HloOpcode::kConstant:
     case HloOpcode::kConvolution:
+    case HloOpcode::kOptimizationBarrier:
     case HloOpcode::kDot:
     case HloOpcode::kDynamicSlice:
     case HloOpcode::kDynamicUpdateSlice:
@@ -607,6 +609,7 @@ bool CanPropagateThroughAtAggressiveLevel(const HloInstruction& inst,
       inst.opcode() != HloOpcode::kGetTupleElement &&
       inst.opcode() != HloOpcode::kWhile &&
       inst.opcode() != HloOpcode::kDynamicSlice &&
+      inst.opcode() != HloOpcode::kOptimizationBarrier &&
       inst.opcode() != HloOpcode::kConcatenate) {
     return false;
   }
@@ -721,6 +724,16 @@ bool InferShardingFromUsers(
   }
   if (!SupportSpatialPartitioning(instruction, computation_map, is_spmd,
                                   false)) {
+    return false;
+  }
+
+  // TODO(b/214615180): Remove this special handing after a general solution.
+  // If the replicated broadcast is 1D and the size is relative small,
+  // no need to shard it.
+  if (is_spmd && instruction->opcode() == HloOpcode::kBroadcast &&
+      instruction->has_sharding() && instruction->sharding().IsReplicated() &&
+      instruction->shape().IsArray() && instruction->shape().rank() == 1 &&
+      instruction->shape().dimensions(0) <= 128) {
     return false;
   }
   bool improved_sharding = false;
@@ -1052,7 +1065,7 @@ bool InferUnspecifiedDimsFromOperand(HloInstruction* annotate_op,
     return false;
   }
   const HloSharding& operand_sharding = annotate_op->operand(0)->sharding();
-  if (operand_sharding.IsTileMaximal()) {
+  if (!operand_sharding.IsTiled()) {
     return false;
   }
   HloInstruction* man_conversion_op = nullptr;

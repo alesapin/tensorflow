@@ -116,12 +116,12 @@ class TensorAndShapeTest(test_util.TensorFlowTestCase):
     op = ops.Operation(
         ops._NodeDef("FloatOutput", "myop"), ops.Graph(), [], [dtypes.float32])
     t = op.outputs[0]
-    with self.assertRaisesRegex(TypeError, "iterating.*not allowed in Graph"):
+    with self.assertRaisesRegex(TypeError, "Iterating.*not allowed in Graph"):
       next(iter(t))
-    with self.assertRaisesRegex(TypeError, "iterating.*AutoGraph did convert"):
+    with self.assertRaisesRegex(TypeError, "Iterating.*AutoGraph did convert"):
       with ag_ctx.ControlStatusCtx(ag_ctx.Status.ENABLED):
         next(iter(t))
-    with self.assertRaisesRegex(TypeError, "iterating.*AutoGraph is disabled"):
+    with self.assertRaisesRegex(TypeError, "Iterating.*AutoGraph is disabled"):
       with ag_ctx.ControlStatusCtx(ag_ctx.Status.DISABLED):
         next(iter(t))
 
@@ -130,14 +130,14 @@ class TensorAndShapeTest(test_util.TensorFlowTestCase):
         ops._NodeDef("FloatOutput", "myop"), ops.Graph(), [], [dtypes.bool])
     t = op.outputs[0]
     with self.assertRaisesRegex(TypeError,
-                                "using.*as a.*bool.*not allowed in Graph"):
+                                "Using.*as a.*bool.*not allowed in Graph"):
       bool(t)
     with self.assertRaisesRegex(TypeError,
-                                "using.*as a.*bool.*AutoGraph did convert"):
+                                "Using.*as a.*bool.*AutoGraph did convert"):
       with ag_ctx.ControlStatusCtx(ag_ctx.Status.ENABLED):
         bool(t)
     with self.assertRaisesRegex(TypeError,
-                                "using.*as a.*bool.*AutoGraph is disabled"):
+                                "Using.*as a.*bool.*AutoGraph is disabled"):
       with ag_ctx.ControlStatusCtx(ag_ctx.Status.DISABLED):
         bool(t)
 
@@ -3759,7 +3759,7 @@ class GraphDefInputShapesTest(test_util.TensorFlowTestCase):
       concrete_function = eager_function.ConcreteFunction(
           concrete_function.graph,
           attrs={"_input_shapes": attr_value},
-          function_spec=concrete_function._pre_initialized_function_spec)
+          spec=concrete_function._pre_initialized_function_spec)
 
     test_graph = ops.Graph()
     with test_graph.as_default():
@@ -3800,11 +3800,11 @@ class TensorTest(test_util.TensorFlowTestCase):
       return np.array(constant_op.constant(32))
 
     with self.assertRaisesRegex(NotImplementedError,
-                                "Cannot convert a symbolic Tensor"):
+                                "Cannot convert a symbolic tf.Tensor"):
       f()
 
     with self.assertRaisesRegex(NotImplementedError,
-                                "Cannot convert a symbolic Tensor"):
+                                "Cannot convert a symbolic tf.Tensor"):
       g()
 
 

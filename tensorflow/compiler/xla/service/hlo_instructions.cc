@@ -15,11 +15,16 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
 
+#include <algorithm>
 #include <deque>
+#include <functional>
+#include <numeric>
 #include <string>
+#include <utility>
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
@@ -1488,7 +1493,16 @@ HloFusionInstruction::HloFusionInstruction(const Shape& shape,
                                            HloInstruction* fused_root)
     : HloInstruction(HloOpcode::kFusion, shape), fusion_kind_(fusion_kind) {
   CHECK(fused_root != nullptr);
-  SetAndSanitizeName("fusion");
+  std::string fusion_name = [&] {
+    if (fusion_kind == FusionKind::kInput) {
+      return absl::StrCat("input_fusion_",
+                          HloOpcodeString(fused_root->opcode()));
+
+    } else {
+      return std::string("fusion");
+    }
+  }();
+  SetAndSanitizeName(fusion_name);
   set_parent(fused_root->parent());
   set_metadata(fused_root->metadata());
   CloneAndFuseInternal(fused_root);
@@ -1564,7 +1578,7 @@ bool HloFusionInstruction::IsElementwiseImpl(
   // A loop-fusion is elementwise on an operand if all operations (computed
   // using BFS) between the operand and the fused root are elementwise.
   std::deque<HloInstruction*> worklist;
-  std::unordered_set<const HloInstruction*> visited;
+  absl::flat_hash_set<const HloInstruction*> visited;
   worklist.push_back(fused_parameter(operand_idx.value()));
   visited.insert(fused_parameter(operand_idx.value()));
   while (!worklist.empty()) {
@@ -1797,7 +1811,16 @@ HloInstruction* HloFusionInstruction::CloneAndFuseInternal(
   if (called_computations().empty()) {
     // New fusion instruction. It should not be a multioutput instruction.
     CHECK(!add_output);
-    auto builder = HloComputation::Builder("fused_computation", this);
+    std::string computation_name = [&] {
+      if (fusion_kind_ == FusionKind::kInput) {
+        return absl::StrCat("input_fused_computation_",
+                            HloOpcodeString(instruction_to_fuse->opcode()));
+
+      } else {
+        return std::string("fused_computation");
+      }
+    }();
+    auto builder = HloComputation::Builder(computation_name, this);
     builder.AddInstruction(instruction_to_fuse->Clone(/*suffix=*/""));
     AppendComputation(
         CHECK_NOTNULL(GetModule())->AddEmbeddedComputation(builder.Build()));
@@ -1962,10 +1985,6 @@ bool HloFusionInstruction::IdenticalSlowPath(
   return fusion_kind() == other.fusion_kind() &&
          eq_computations(fused_instructions_computation(),
                          other.fused_instructions_computation());
-}
-
-uint64_t HloFusionInstruction::InnerHash() const {
-  return fused_instructions_computation()->root_instruction()->Hash();
 }
 
 std::unique_ptr<HloInstruction> HloFusionInstruction::CloneWithNewOperandsImpl(

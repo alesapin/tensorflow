@@ -184,6 +184,15 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "cl_device_test",
+    srcs = ["cl_device_test.cc"],
+    deps = [
+        ":cl_device",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "cl_errors",
     hdrs = ["cl_errors.h"],
@@ -403,6 +412,7 @@ cc_library(
         ":tensor",
         "//tensorflow/lite/delegates/gpu/common:data_type",
         "//tensorflow/lite/delegates/gpu/common:gpu_model",
+        "//tensorflow/lite/delegates/gpu/common:gpu_model_cc_fbs",
         "//tensorflow/lite/delegates/gpu/common:memory_management",
         "//tensorflow/lite/delegates/gpu/common:model",
         "//tensorflow/lite/delegates/gpu/common:model_hints",
@@ -425,9 +435,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common/task:tensor_desc",
         "//tensorflow/lite/delegates/gpu/common/task:tensor_linear_desc",
         "//tensorflow/lite/delegates/gpu/common/task:texture2d_desc",
-        "//tensorflow/lite/delegates/gpu/common/transformations:add_bias",
-        "//tensorflow/lite/delegates/gpu/common/transformations:global_pooling_to_reduce_op",
-        "//tensorflow/lite/delegates/gpu/common/transformations:merge_padding_with",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/types:span",
@@ -525,6 +532,7 @@ flatbuffer_cc_library(
         "-I " + workspace_root,
     ],
     includes = [
+        "//tensorflow/lite/delegates/gpu/common:gpu_model_cc_fbs_includes",
         "//tensorflow/lite/delegates/gpu/common/task:serialization_base_cc_fbs_includes",
     ],
 )

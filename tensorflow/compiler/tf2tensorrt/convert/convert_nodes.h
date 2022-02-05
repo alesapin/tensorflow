@@ -149,6 +149,9 @@ Status ConvertSegmentToGraphDef(
 // - convert_successfully: indicates whether the conversion to TensorRT network
 //   is successful. This is different than successfully building the engine:
 //   building can still fail afterwards.
+// Note: When 'cluster' is not null, it contains the graph to be converted.
+//       We may perform additional optimizations to the graph before converting
+//       the graph.
 Status ConvertGraphDefToEngine(
     const GraphDef& gdef, TrtPrecisionMode precision_mode, int max_batch_size,
     size_t max_workspace_size_bytes,
@@ -158,7 +161,8 @@ Status ConvertGraphDefToEngine(
     TrtUniquePtrType<nvinfer1::ICudaEngine>* engine, bool use_calibration,
     const bool use_implicit_batch, bool* convert_successfully,
     TrtShapeOptimizationProfile* profiles, absl::string_view engine_name,
-    bool use_explicit_precision);
+    bool use_explicit_precision,
+    tensorflow::grappler::Cluster* cluster = nullptr);
 
 // Helper class for the segmenter to determine whether an output edge from the
 // TRT segment is valid.
@@ -168,8 +172,6 @@ class OutputEdgeValidator {
   // TRT segment.
   bool operator()(const Edge* out_edge) const;
 };
-
-int64_t TrtTensorDimsNumElements(const nvinfer1::Dims& dims);
 
 // Class to verify if specific TF node is supported by TRT.
 class TrtNodeValidator {
@@ -477,7 +479,7 @@ class Converter {
 // If validation_only is false converter must not be nullptr.
 Status PrepareTensorForShape(
     Converter* converter, const TRT_TensorOrWeights& input,
-    const nvinfer1::Dims& dims, const bool validation_only,
+    const DimsAdapter& dims, const bool validation_only,
     ITensorProxyPtr* tensor, const NodeDef& node_def,
     absl::optional<int> op_instance = absl::nullopt,
     absl::optional<std::string> origin_node_name = absl::nullopt);

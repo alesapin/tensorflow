@@ -367,13 +367,14 @@ PyObject* TFE_Py_TensorShapeOnDevice(PyObject* tensor);
 
 void TFE_Py_EnableInteractivePythonLogging();
 
-// Sets `python_context` as the current eager Context object (defined
+// Sets the current Python eager Context object (defined
 // in eager/context.py). This function must be called at least once before
 // eager tensors are created.
 // If an error is encountered, sets python error and returns NULL. Else, returns
 // Py_None.
 //
-// This function is not thread-safe.
+// Not thread-safe.
+// TODO(mdan): Retire this - non-Python users should only need the EagerContext.
 PyObject* TFE_Py_SetEagerContext(PyObject* py_context);
 
 // Returns the current eager Context object (defined in eager/context.py)
