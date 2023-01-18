@@ -18,9 +18,12 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
 #include "tensorflow/core/data/service/grpc_util.h"
+#include "tensorflow/core/data/standalone.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/errors.h"
@@ -34,11 +37,11 @@ Status DataServiceSplitProvider::GetNext(Tensor* split, bool* end_of_splits) {
   mutex_lock l(mu_);
   if (!dispatcher_) {
     dispatcher_ =
-        absl::make_unique<DataServiceDispatcherClient>(address_, protocol_);
+        std::make_unique<DataServiceDispatcherClient>(address_, protocol_);
   }
   TF_RETURN_IF_ERROR(grpc_util::Retry(
       [this, split, end_of_splits] {
-        return dispatcher_->GetSplit(job_id_, repetition_,
+        return dispatcher_->GetSplit(iteration_id_, repetition_,
                                      split_provider_index_, *split,
                                      *end_of_splits);
       },
@@ -46,19 +49,20 @@ Status DataServiceSplitProvider::GetNext(Tensor* split, bool* end_of_splits) {
       /*deadline_micros=*/Env::Default()->NowMicros() +
           (timeout_ms_ * EnvTime::kMillisToMicros)));
   if (*end_of_splits) {
-    VLOG(1) << "Reached end of splits for job_id=" << job_id_
+    VLOG(1) << "Reached end of splits for iteration_id=" << iteration_id_
             << ", repetition=" << repetition_;
   } else {
     VLOG(1) << "Requested split: " << split->DebugString()
-            << "; with job_id=" << job_id_ << ", repetition=" << repetition_;
+            << "; with iteration_id=" << iteration_id_
+            << ", repetition=" << repetition_;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status DataServiceSplitProvider::Reset() {
   mutex_lock l(mu_);
   repetition_++;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status DataServiceSplitProvider::Save(
@@ -73,6 +77,17 @@ Status DataServiceSplitProvider::Restore(
     IteratorStateReader* reader) {
   return errors::Unimplemented(
       "Restore is not implemented for DataServiceSplitProvider");
+}
+
+Status CreateSplitProviders(
+    const DatasetDef& dataset_def,
+    std::vector<std::unique_ptr<SplitProvider>>& split_providers) {
+  standalone::Dataset::Params params;
+  std::unique_ptr<standalone::Dataset> standalone_dataset;
+  TF_RETURN_IF_ERROR(standalone::Dataset::FromGraph(params, dataset_def.graph(),
+                                                    &standalone_dataset));
+  TF_RETURN_IF_ERROR(standalone_dataset->MakeSplitProviders(&split_providers));
+  return OkStatus();
 }
 
 }  // namespace data

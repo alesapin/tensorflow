@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <ctype.h>
+
 #include <iostream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+
 #include "flatbuffers/minireflect.h"  // from @flatbuffers
 #include "tensorflow/lite/schema/reflection/schema_generated.h"
 
@@ -38,6 +41,7 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteConvParams",
                                       "TfLiteDepthwiseConvParams",
                                       "TfLiteDivParams",
+                                      "TfLiteDynamicUpdateSliceParams",
                                       "TfLiteEmbeddingLookupSparseParams",
                                       "TfLiteFakeQuantParams",
                                       "TfLiteFullyConnectedParams",
@@ -92,6 +96,8 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteHashtableSizeParams",
                                       "TfLiteConv3DTransposeParams",
                                       "TfLiteVarHandleParams",
+                                      "TfLiteUnsortedSegmentSumParams",
+                                      "TfLiteUnsortedSegmentMinParams",
                                       nullptr};
 }  // namespace
 
@@ -197,6 +203,7 @@ class OpOptionData {
     op_to_option_["LOGISTIC"] = "";
     op_to_option_["RELU"] = "";
     op_to_option_["RELU_N1_TO_1"] = "";
+    op_to_option_["RELU_0_TO_1"] = "";
     op_to_option_["RELU6"] = "";
     op_to_option_["ROUND"] = "";
     op_to_option_["TANH"] = "";
@@ -212,6 +219,7 @@ class OpOptionData {
     op_to_option_["COMPLEX_ABS"] = "";
     op_to_option_["BROADCAST_ARGS"] = "";
     op_to_option_["GELU"] = "";
+    op_to_option_["DYNAMIC_UPDATE_SLICE"] = "";
 
     // TODO(aselle): These are undesirable hacks. Consider changing C structs
     option_to_struct_["Pool2DOptions"] = "TfLitePoolParams";
@@ -312,7 +320,7 @@ void GenerateImportForReshapeOp(FILE* fp) {
           "    const auto* params = reinterpret_cast<const "
           "TfLiteReshapeParams*>(builtin_op_data);\n"
           "    flatbuffers::Offset<void> union_type;\n"
-          "    if (node.inputs->size > 1 && (params->num_dimensions <= 0 || "
+          "    if (node_inputs_size > 1 && (params->num_dimensions <= 0 || "
           "params->num_dimensions > TFLITE_RESHAPE_PARAMS_MAX_DIMENSION_COUNT))"
           " {\n"
           "      union_type = CreateReshapeOptions(*fbb).Union();\n"

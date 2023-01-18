@@ -257,11 +257,11 @@ class ResizeNearestNeighborOpGrad : public OpKernel {
     const int64_t out_width = sizes(1);
 
     Tensor* output = nullptr;
-    OP_REQUIRES_OK(
-        context,
-        context->allocate_output(
-            0, TensorShape({batch_size, out_height, out_width, channels}),
-            &output));
+    TensorShape shape;
+    OP_REQUIRES_OK(context,
+                   TensorShape::BuildTensorShape(
+                       {batch_size, out_height, out_width, channels}, &shape));
+    OP_REQUIRES_OK(context, context->allocate_output(0, shape, &output));
 
     // Return if the output is empty.
     if (output->NumElements() == 0) return;
@@ -391,6 +391,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNEL);
                           ResizeNearestNeighborOpGrad<GPUDevice, T>);
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_KERNEL);
+TF_CALL_bfloat16(REGISTER_KERNEL);
 
 #undef REGISTER_KERNEL
 

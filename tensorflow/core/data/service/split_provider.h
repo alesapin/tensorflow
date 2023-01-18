@@ -19,7 +19,9 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -33,11 +35,11 @@ namespace data {
 class DataServiceSplitProvider : public SplitProvider {
  public:
   DataServiceSplitProvider(const std::string& address,
-                           const std::string& protocol, int64_t job_id,
+                           const std::string& protocol, int64_t iteration_id,
                            int64_t split_provider_index, int64_t timeout_ms)
       : address_(address),
         protocol_(protocol),
-        job_id_(job_id),
+        iteration_id_(iteration_id),
         split_provider_index_(split_provider_index),
         timeout_ms_(timeout_ms) {}
 
@@ -51,7 +53,7 @@ class DataServiceSplitProvider : public SplitProvider {
  private:
   const std::string address_;
   const std::string protocol_;
-  const int64_t job_id_;
+  const int64_t iteration_id_;
   const int64_t split_provider_index_;
   const int64_t timeout_ms_;
 
@@ -59,6 +61,11 @@ class DataServiceSplitProvider : public SplitProvider {
   int64_t repetition_ = 0;
   std::unique_ptr<DataServiceDispatcherClient> dispatcher_;
 };
+
+// Makes split providers for `dataset_def` and stores them in `split_providers`.
+Status CreateSplitProviders(
+    const DatasetDef& dataset_def,
+    std::vector<std::unique_ptr<SplitProvider>>& split_providers);
 
 }  // namespace data
 }  // namespace tensorflow

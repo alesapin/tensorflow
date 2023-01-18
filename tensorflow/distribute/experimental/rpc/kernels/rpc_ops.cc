@@ -18,13 +18,13 @@ limitations under the License.
 #include <vector>
 
 #include "grpcpp/channel.h"
+#include "grpcpp/client_context.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/generic/generic_stub.h"
-#include "grpcpp/impl/codegen/client_context.h"
-#include "grpcpp/impl/codegen/server_context.h"
-#include "grpcpp/impl/codegen/status.h"
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/server_builder.h"
+#include "grpcpp/server_context.h"
+#include "grpcpp/support/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 // Needed for encoding and decoding ResourceDeleter Variant.
@@ -196,7 +196,7 @@ class FunctionRegistry {
       return tensorflow::errors::InvalidArgument(
           absl::StrCat(method, " is already registered."));
     }
-    return tensorflow::Status::OK();
+    return OkStatus();
   }
 
   tensorflow::Status LookUp(const std::string& method,
@@ -209,7 +209,7 @@ class FunctionRegistry {
     }
 
     *output = it->second;
-    return tensorflow::Status::OK();
+    return OkStatus();
   }
 
   const gtl::FlatMap<std::string, FunctionMetadata>& List() const {
@@ -522,7 +522,7 @@ void RpcServerOp::Compute(OpKernelContext* ctx) {
   // Create resource
   auto creator = [address](RpcServer** server) {
     *server = new RpcServer(address);
-    return Status::OK();
+    return OkStatus();
   };
   core::RefCountPtr<RpcServer> server;
   OP_REQUIRES_OK(ctx, LookupOrCreateResource<RpcServer>(ctx, resource_handle,
@@ -563,7 +563,7 @@ void RpcClientOp::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
   // Create resource
   auto creator = [&address, &resource_name, timeout_in_ms](RpcClient** client) {
     *client = new RpcClient(address, resource_name, timeout_in_ms);
-    return Status::OK();
+    return OkStatus();
   };
 
   core::RefCountPtr<RpcClient> client;
@@ -614,7 +614,7 @@ void RpcServerStartOp::Compute(OpKernelContext* ctx) {
   OP_REQUIRES_OK(ctx, LookupResource(ctx, HandleFromInput(ctx, 0), &server));
 
   server->StartServer();
-  ctx->SetStatus(Status::OK());
+  ctx->SetStatus(OkStatus());
 }
 
 RpcServerRegisterOp::RpcServerRegisterOp(OpKernelConstruction* ctx)
@@ -725,7 +725,7 @@ void RpcCallOp::Compute(OpKernelContext* ctx) {
   // Create resource
   auto creator = [](RpcFutureResource** resource) {
     *resource = new RpcFutureResource();
-    return Status::OK();
+    return OkStatus();
   };
   core::RefCountPtr<RpcFutureResource> future_resource;
   OP_REQUIRES_OK(ctx, LookupOrCreateResource<RpcFutureResource>(

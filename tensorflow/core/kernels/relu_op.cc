@@ -45,14 +45,24 @@ typedef Eigen::GpuDevice GPUDevice;
       Name("Relu6Grad").Device(DEVICE_CPU).TypeConstraint<type>("T"),     \
       Relu6GradOp<CPUDevice, type>)                                       \
   REGISTER_KERNEL_BUILDER(                                                \
-      Name("LeakyRelu").Device(DEVICE_CPU).TypeConstraint<type>("T"),     \
-      LeakyReluOp<CPUDevice, type>);                                      \
-  REGISTER_KERNEL_BUILDER(                                                \
       Name("LeakyReluGrad").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
       LeakyReluGradOp<CPUDevice, type>);
 
 TF_CALL_REAL_NUMBER_TYPES(REGISTER_RELU_KERNELS);
 #undef REGISTER_RELU_KERNELS
+
+// Register LeakyRelu here for all types except bfloat16
+// bfloat16 is in cwise_op_leakyrelu_bf16.cc
+#define REGISTER_LEAKYRELU_KERNELS(type)                              \
+  REGISTER_KERNEL_BUILDER(                                            \
+      Name("LeakyRelu").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
+      LeakyReluOp<CPUDevice, type>);
+
+TF_CALL_INTEGRAL_TYPES(REGISTER_LEAKYRELU_KERNELS)
+TF_CALL_half(REGISTER_LEAKYRELU_KERNELS)
+    TF_CALL_float(REGISTER_LEAKYRELU_KERNELS)
+        TF_CALL_double(REGISTER_LEAKYRELU_KERNELS)
+#undef REGISTER_LEAKYRELU_KERNELS
 
 #define REGISTER_ELU_KERNELS(type)                                   \
   REGISTER_KERNEL_BUILDER(                                           \
@@ -68,8 +78,8 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_RELU_KERNELS);
       Name("SeluGrad").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
       SeluGradOp<CPUDevice, type>)
 
-// Elu and Selu only make sense with float or double.
-TF_CALL_FLOAT_TYPES(REGISTER_ELU_KERNELS);
+    // Elu and Selu only make sense with float or double.
+    TF_CALL_FLOAT_TYPES(REGISTER_ELU_KERNELS);
 #undef REGISTER_ELU_KERNELS
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -97,6 +107,7 @@ namespace functor {
   extern template struct Selu<GPUDevice, T>;
 
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_NO_MLIR_SPEC);
+TF_CALL_bfloat16(DECLARE_GPU_NO_MLIR_SPEC);
 }  // namespace functor
 
 #define REGISTER_GPU_NO_MLIR_KERNELS(type)                       \
@@ -111,6 +122,7 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_NO_MLIR_SPEC);
       SeluOp<GPUDevice, type>);
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_NO_MLIR_KERNELS);
+TF_CALL_bfloat16(REGISTER_GPU_NO_MLIR_KERNELS);
 #undef REGISTER_RELU_KERNEL
 #endif
 
@@ -169,6 +181,7 @@ void Relu<GPUDevice, qint8>::operator()(
 extern template struct Relu<GPUDevice, qint8>;
 
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
+TF_CALL_bfloat16(DECLARE_GPU_SPEC);
 }  // namespace functor
 
 // Registration of the GPU implementations.
@@ -196,6 +209,7 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
       SeluGradOp<GPUDevice, type>)
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_KERNELS);
+TF_CALL_bfloat16(REGISTER_GPU_KERNELS);
 #undef REGISTER_GPU_KERNELS
 
 template <typename Device>

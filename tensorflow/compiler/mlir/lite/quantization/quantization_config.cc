@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_config.h"
 
+#include <algorithm>
 #include <ios>
 #include <sstream>
 #include <string>
@@ -42,7 +43,7 @@ static bool IsQuantizationType(tensorflow::DataType dtype) {
 }
 
 namespace mlir {
-namespace TFL {
+namespace quant {
 namespace {
 bool GetBooleanSpecs(const std::string& bool_val) {
   bool result;
@@ -65,7 +66,7 @@ void ParseCustomOpSpecs(absl::string_view node_names,
     auto node_specification = node_infos[1];
     CustomOpInfo new_node_info;
     switch (update_option) {
-      case CustomOpUpdateOptions::kINputIndices: {
+      case CustomOpUpdateOptions::kInputIndices: {
         std::vector<std::string> indices =
             absl::StrSplit(node_specification, '-');
         for (auto& cur_index : indices) {
@@ -157,5 +158,5 @@ bool GetInputNodeQuantSpecs(
   return false;
 }
 
-}  // namespace TFL
+}  // namespace quant
 }  // namespace mlir

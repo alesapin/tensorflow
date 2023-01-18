@@ -75,15 +75,6 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.BitwiseAnd`
 *   `raw_ops.BitwiseOr`
 *   `raw_ops.BitwiseXor`
-*   `raw_ops.BoostedTreesBucketize`
-*   `raw_ops.BoostedTreesCreateQuantileStreamResource`
-*   `raw_ops.BoostedTreesFlushQuantileSummaries`
-*   `raw_ops.BoostedTreesMakeQuantileSummaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceAddSummaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceDeserialize`
-*   `raw_ops.BoostedTreesQuantileStreamResourceFlush`
-*   `raw_ops.BoostedTreesQuantileStreamResourceGetBucketBoundaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceHandleOp`
 *   `raw_ops.BroadcastArgs`
 *   `raw_ops.BroadcastGradientArgs`
 *   `raw_ops.BroadcastTo`
@@ -95,6 +86,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.CheckNumerics`
 *   `raw_ops.CheckNumericsV2`
 *   `raw_ops.Cholesky`
+*   `raw_ops.ClipByValue`
 *   `raw_ops.CombinedNonMaxSuppression`
 *   `raw_ops.Complex`
 *   `raw_ops.ComplexAbs`
@@ -243,7 +235,6 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.IRFFT`
 *   `raw_ops.IRFFT2D`
 *   `raw_ops.IRFFT3D`
-*   `raw_ops.IsBoostedTreesQuantileStreamResourceInitialized`
 *   `raw_ops.IsFinite`
 *   `raw_ops.IsNan`
 *   `raw_ops.IsVariableInitialized`
@@ -599,6 +590,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.StackV2`
 *   `raw_ops.StatelessMultinomial`
 *   `raw_ops.StatelessRandomGammaV2`
+*   `raw_ops.StatelessRandomGammaV3`
 *   `raw_ops.StatelessRandomGetAlg`
 *   `raw_ops.StatelessRandomGetKeyCounter`
 *   `raw_ops.StatelessRandomGetKeyCounterAlg`
@@ -725,11 +717,13 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.UniqueWithCounts`
 *   `raw_ops.UniqueWithCountsV2`
 *   `raw_ops.Unpack`
+*   `raw_ops.UnsortedSegmentJoin`
 *   `raw_ops.UnsortedSegmentMax`
 *   `raw_ops.UnsortedSegmentMin`
 *   `raw_ops.UnsortedSegmentProd`
 *   `raw_ops.UnsortedSegmentSum`
 *   `raw_ops.UnwrapDatasetVariant`
+*   `raw_ops.UpperBound`
 *   `raw_ops.VarHandleOp`
 *   `raw_ops.Variable`
 *   `raw_ops.VariableShape`
@@ -854,7 +848,7 @@ filegroup(
 )
 ```
 
-In order to find the relvant operator kernel source file under the
+In order to find the relevant operator kernel source file under the
 `tensorflow/core/kernels` directory, you can search the source code location,
 which contains the following kernel declaration with the operator name:
 

@@ -1,11 +1,9 @@
 # Tests of TensorFlow NN kernels written using the Python API.
 
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
-
-# buildifier: disable=same-origin-load
-load("//tensorflow:tensorflow.bzl", "tf_py_test")
+load("//tensorflow:tensorflow.default.bzl", "cuda_py_test", "tf_py_test")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//tensorflow:internal"],
     licenses = ["notice"],
 )
@@ -210,7 +208,10 @@ cuda_py_test(
     size = "medium",
     srcs = ["conv_ops_3d_test.py"],
     shard_count = 30,
-    tags = ["no_cuda11"],
+    tags = [
+        "no_cuda11",
+        "no_mac_arm64",
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -225,6 +226,7 @@ cuda_py_test(
     srcs = ["conv_ops_test.py"],
     shard_count = 4,
     tags = [
+        "no_mac_arm64",
         "optonly",  # times out
     ],
     deps = [
@@ -281,6 +283,7 @@ py_library(
         "//tensorflow/python:constant_op",
         "//tensorflow/python:dtypes",
         "//tensorflow/python:nn_ops",
+        "//tensorflow/python/eager:backprop",
         "//third_party/py/numpy",
     ],
 )
@@ -291,6 +294,7 @@ cuda_py_test(
     srcs = ["cudnn_deterministic_ops_test.py"],
     tags = [
         "no_cuda_asan",  # TODO(b/171509035): re-enable.
+        "no_rocm_pre_53",
     ],
     xla_enable_strict_auto_jit = True,
     deps = [
@@ -304,9 +308,37 @@ cuda_py_test(
     srcs = ["cudnn_d9m_test.py"],
     tags = [
         "no_cuda_asan",  # TODO(b/171509035): re-enable.
+        "no_rocm",  #This is test is specific to CUDA and enables determinism through a CUDA specific env var.
     ],
     deps = [
         ":cudnn_deterministic_base",
+    ],
+)
+
+py_library(
+    name = "depthwise_conv_op_base",
+    srcs = ["depthwise_conv_op_base.py"],
+    deps = [
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:nn",
+        "//tensorflow/python:nn_grad",
+        "//tensorflow/python:nn_ops",
+        "//third_party/py/numpy",
+    ],
+)
+
+cuda_py_test(
+    name = "depthwise_conv_op_d9m_test",
+    size = "medium",  # http://b/30603882
+    timeout = "long",
+    srcs = ["depthwise_conv_op_d9m_test.py"],
+    shard_count = 8,
+    deps = [
+        ":depthwise_conv_op_base",
+        "//tensorflow/python:random_ops",
+        "//tensorflow/python/eager:backprop",
     ],
 )
 
@@ -316,19 +348,8 @@ cuda_py_test(
     timeout = "long",
     srcs = ["depthwise_conv_op_test.py"],
     shard_count = 8,
-    tags = [
-        "no_oss",  # TODO(b/118842098): Re-enable this test in Kokoro.
-    ],
     deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:nn",
-        "//tensorflow/python:nn_grad",
-        "//tensorflow/python:nn_ops",
-        "//tensorflow/python:random_ops",
-        "//tensorflow/python/eager:backprop",
-        "//third_party/py/numpy",
+        ":depthwise_conv_op_base",
     ],
 )
 
@@ -483,6 +504,7 @@ cuda_py_test(
     srcs = ["pooling_ops_3d_test.py"],
     deps = [
         "//tensorflow/python:client_testlib",
+        "//tensorflow/python:dtypes",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:nn_ops",
@@ -558,7 +580,7 @@ cuda_py_test(
         "//tensorflow/python/eager:def_function",
         "//tensorflow/python/saved_model:load",
         "//tensorflow/python/saved_model:save",
-        "//tensorflow/python/training/tracking",
+        "//tensorflow/python/trackable:autotrackable",
         "//third_party/py/numpy",
         "@absl_py//absl/testing:parameterized",
     ],
@@ -636,8 +658,14 @@ cuda_py_test(
 cuda_py_test(
     name = "xent_op_d9m_test",
     size = "medium",
+    timeout = "long",
     srcs = ["xent_op_d9m_test.py"],
-    tags = ["notsan"],  # TODO(b/200548634): Remove.
+    tags = [
+        "no_windows",  # Flaky on Windows CPU: https://github.com/tensorflow/tensorflow/issues/55827
+        "noasan",  # TODO(b/231484532): Remove after flakiness resolved.
+        "nomac",  # TODO(b/235277289) Flaky on OSX
+        "notsan",  # TODO(b/200548634): Remove.
+    ],
     xla_enable_strict_auto_jit = False,
     deps = [
         ":xent_op_test_base",
