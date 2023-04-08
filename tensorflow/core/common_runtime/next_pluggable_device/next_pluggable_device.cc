@@ -19,9 +19,9 @@ limitations under the License.
 #include <utility>
 
 #include "absl/flags/flag.h"
+#include "tensorflow/compiler/jit/pjrt_device_context.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/next_pluggable_device/next_pluggable_device_allocator.h"
-#include "tensorflow/core/common_runtime/next_pluggable_device/pjrt_device_context.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
@@ -54,7 +54,12 @@ NextPluggableDevice::NextPluggableDevice(const SessionOptions& session_options,
       compilation_device_type_(options.compilation_device_name) {
   allocator_ = std::make_unique<NextPluggableDeviceAllocator>(device_ordinal_);
   if (absl::GetFlag(FLAGS_next_pluggable_device_use_pjrt)) {
-    device_context_ = core::RefCountPtr<DeviceContext>(new PjRtDeviceContext());
+    // TODO(b/262472386) Support shape_determination_fns through
+    // TFNPD_XlaShapeToDeviceShapeRepresentation.
+    XlaShapeLayoutHelpers::ShapeDeterminationFns shape_representation_fns{
+        UseNoPreferenceLayoutFn(), IdentityShapeRepresentationFn()};
+    device_context_ = core::RefCountPtr<DeviceContext>(
+        new PjRtDeviceContext(shape_representation_fns));
   } else {
     device_context_ = core::RefCountPtr<DeviceContext>(
         new NextPluggableDeviceContext(device_ordinal_));

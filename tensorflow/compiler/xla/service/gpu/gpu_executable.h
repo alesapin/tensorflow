@@ -36,6 +36,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/executable.h"
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_types.h"
+#include "tensorflow/compiler/xla/service/gpu/non_atomically_upgradeable_rw_lock.h"
 #include "tensorflow/compiler/xla/service/gpu/runtime/executable.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_execution_profile.h"
@@ -200,7 +201,8 @@ class GpuExecutable : public Executable {
   // GPU execution completes.
   Status ExecuteThunksOrXlaRuntime(
       const ServiceExecutableRunOptions* run_options,
-      const BufferAllocations& buffer_allocations, bool block_host_until_done);
+      const BufferAllocations& buffer_allocations, bool block_host_until_done,
+      NonAtomicallyUpgradeableRWLock& gpu_lock);
 
   using BufferAllocToDeviceMemoryMap =
       absl::flat_hash_map<BufferAllocation::Index, se::DeviceMemoryBase>;
@@ -280,10 +282,11 @@ class GpuExecutable : public Executable {
   absl::Mutex module_handle_mutex_;
   // Cache of module handles. Required to keep loaded modules alive until this
   // executable is destroyed.
-  std::map<stream_executor::StreamExecutor*, se::ScopedModuleHandle>
+  absl::flat_hash_map<stream_executor::StreamExecutor*, se::ScopedModuleHandle>
       module_handles_ ABSL_GUARDED_BY(module_handle_mutex_);
   // Cache of constant buffer allocation maps used by `ResolveConstantGlobals`.
-  std::map<stream_executor::StreamExecutor*, BufferAllocToDeviceMemoryMap>
+  absl::flat_hash_map<stream_executor::StreamExecutor*,
+                      BufferAllocToDeviceMemoryMap>
       module_globals_ ABSL_GUARDED_BY(module_handle_mutex_);
 
   std::vector<ConstantInfo> constants_;

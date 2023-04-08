@@ -46,6 +46,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/gpu_constants.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_executable_run_options.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_types.h"
+#include "tensorflow/compiler/xla/service/gpu/non_atomically_upgradeable_rw_lock.h"
 #include "tensorflow/compiler/xla/service/gpu/runtime/collectives.h"
 #include "tensorflow/compiler/xla/service/gpu/runtime/cublas_lt_matmul.h"
 #include "tensorflow/compiler/xla/service/gpu/runtime/executable.h"
@@ -81,6 +82,7 @@ bool IsXlaRuntimeExecutableEnabled(const HloModuleConfig& config) {
 namespace {
 
 using ::tsl::profiler::ScopedAnnotation;
+using ::tsl::profiler::ScopedAnnotationAlways;
 
 bool NeedsAsyncCommsStream(Thunk& thunk) {
   switch (thunk.kind()) {
@@ -139,19 +141,6 @@ GpuExecutable::~GpuExecutable() {
   if (has_module()) {
     XlaDebugInfoManager::Get()->UnregisterModule(module().unique_id());
   }
-
-  {
-    // We could have issued host->device mem copies in ResolveConstantGlobals.
-    // Wait for those to finish so that we can safely deallocate the backing HLO
-    // module.
-    //
-    // We need for the host->device memcpies to finish they are concurrently
-    // reading memory (xla::Literal's) owned by the HLO module.
-    absl::MutexLock lock(&module_handle_mutex_);
-    for (const auto& pair : module_globals_) {
-      CHECK(pair.first->SynchronizeAllActivity());
-    }
-  }
 }
 
 Status GpuExecutable::CheckCompatibilityWithServiceExecutableRunOptions(
@@ -205,7 +194,7 @@ Status ExecuteThunks(const std::string& module_name, ModuleIdentifier module_id,
       [&] { return absl::StrCat(module_name, ":XLA GPU module"); },
       tsl::profiler::TraceMeLevel::kInfo);
 
-  ScopedAnnotation annotation([&] {
+  ScopedAnnotationAlways annotation([&] {
     std::string module_id_str;
     if (module_id >= 0) {
       module_id_str = absl::StrFormat(",program_id=%d", module_id);
@@ -290,6 +279,10 @@ GpuExecutable::ResolveConstantGlobals(se::Stream* stream) {
     TF_RETURN_IF_ERROR(executor->LoadModule(module_spec, &module_handle));
   }
 
+  // A flag signalling if constant initialization submitted memcpy operations
+  // to the `stream`.
+  int submitted_mem_copies = 0;
+
   for (const ConstantInfo& info : constants_) {
     StatusOr<stream_executor::DeviceMemoryBase> global_status;
     if (static_cast<bool>(module_handle)) {
@@ -309,6 +302,7 @@ GpuExecutable::ResolveConstantGlobals(se::Stream* stream) {
         // This means the constant did not have an initializer in the PTX and
         // therefore must be initialized by XLA here.
         stream->ThenMemcpy(&global, info.content.data(), info.content.size());
+        submitted_mem_copies = true;
       }
     } else {
       // The constant was not defined in the PTX and therefore must be both
@@ -329,6 +323,13 @@ GpuExecutable::ResolveConstantGlobals(se::Stream* stream) {
     if (info.allocation_index != -1) {
       InsertOrDie(&globals, info.allocation_index, global);
     }
+  }
+
+  // Wait for the completion of all host->device transfers, to guarantee that
+  // destructor will not race with any operations in flight (deallocate
+  // xla::Literal owned by the HLO module).
+  if (submitted_mem_copies) {
+    TF_CHECK_OK(stream->BlockHostUntilDone());
   }
 
   module_handles_.emplace(executor,
@@ -458,14 +459,15 @@ static Status ExecuteXlaRuntime(const std::string& module_name,
                                 const std::vector<uint8_t>& binary,
                                 const BufferAllocations& buffer_allocations,
                                 const BufferAllocation* temp_buffer,
-                                bool block_host_until_done) {
+                                bool block_host_until_done,
+                                NonAtomicallyUpgradeableRWLock& gpu_lock) {
   uint64_t start_nanos = tsl::Env::Default()->NowNanos();
 
   tsl::profiler::TraceMe hlo_module_activity(
       [&] { return absl::StrCat(module_name, ":XLA GPU module"); },
       tsl::profiler::TraceMeLevel::kInfo);
 
-  ScopedAnnotation annotation([&] {
+  ScopedAnnotationAlways annotation([&] {
     std::string module_id_str;
     if (module_id >= 0) {
       module_id_str = absl::StrFormat(",program_id=%d", module_id);
@@ -475,7 +477,7 @@ static Status ExecuteXlaRuntime(const std::string& module_name,
   });
 
   auto executed = gpu_runtime_executable.Execute(
-      run_options, asm_text, binary, buffer_allocations, temp_buffer);
+      run_options, asm_text, binary, buffer_allocations, gpu_lock, temp_buffer);
   if (!executed.ok()) return executed;
 
   return MaybeSyncAndProfile(
@@ -498,7 +500,7 @@ StatusOr<ExecutionOutput> GpuExecutable::ExecuteAsyncOnStreamImpl(
   // Lock the GPU with a shared lock so that we don't interfere with autotuning
   // that may be running during JIT compilation while allowing multiple XLA
   // computations to use the same GPU simultaneously.
-  absl::ReaderMutexLock gpu_lock(&GetGpuMutex(executor));
+  NonAtomicallyUpgradeableRWLock gpu_lock(&GetGpuMutex(executor));
 
   const GpuExecutable::BufferAllocToDeviceMemoryMap* globals;
   {
@@ -629,8 +631,8 @@ StatusOr<ExecutionOutput> GpuExecutable::ExecuteAsyncOnStreamImpl(
     buffers_in_result.insert(result_buffer);
   }
 
-  TF_RETURN_IF_ERROR(ExecuteThunksOrXlaRuntime(run_options, buffer_allocations,
-                                               block_host_until_done));
+  TF_RETURN_IF_ERROR(ExecuteThunksOrXlaRuntime(
+      run_options, buffer_allocations, block_host_until_done, gpu_lock));
 
   // Free all temporary allocations.
   TF_RETURN_IF_ERROR(
@@ -645,7 +647,8 @@ StatusOr<ExecutionOutput> GpuExecutable::ExecuteAsyncOnStreamImpl(
 
 Status GpuExecutable::ExecuteThunksOrXlaRuntime(
     const ServiceExecutableRunOptions* run_options,
-    const BufferAllocations& buffer_allocations, bool block_host_until_done) {
+    const BufferAllocations& buffer_allocations, bool block_host_until_done,
+    NonAtomicallyUpgradeableRWLock& gpu_lock) {
   TF_RETURN_IF_ERROR(
       CheckCompatibilityWithServiceExecutableRunOptions(run_options));
 
@@ -677,7 +680,7 @@ Status GpuExecutable::ExecuteThunksOrXlaRuntime(
     }
     return ExecuteXlaRuntime(module_name_, unique_id, *gpu_runtime_executable_,
                              run_options, text_, binary_, buffer_allocations,
-                             temp_buffer, block_host_until_done);
+                             temp_buffer, block_host_until_done, gpu_lock);
   }
 
   return FailedPrecondition("Expected XLA gpu executable is not supplied.");
