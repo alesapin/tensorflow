@@ -15,9 +15,17 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/evaluation/evaluation_delegate_provider.h"
 
+#include <cstdint>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/tools/command_line_flags.h"
+#include "tensorflow/lite/tools/evaluation/proto/evaluation_stages.pb.h"
+#include "tensorflow/lite/tools/evaluation/utils.h"
 #include "tensorflow/lite/tools/logging.h"
+#include "tensorflow/lite/tools/tool_params.h"
 
 namespace tflite {
 namespace evaluation {
@@ -64,7 +72,7 @@ TfLiteDelegatePtr CreateTfLiteDelegate(const TfliteInferenceParams& params,
       return p;
     }
     case TfliteInferenceParams::XNNPACK: {
-      auto p = CreateXNNPACKDelegate(params.num_threads());
+      auto p = CreateXNNPACKDelegate(params.num_threads(), false);
       if (!p && error_msg) *error_msg = "XNNPACK delegate not supported.";
       return p;
     }
@@ -156,6 +164,9 @@ tools::ToolParams DelegateProviders::GetAllParams(
     case TfliteInferenceParams::XNNPACK:
       if (tool_params.HasParam("use_xnnpack")) {
         tool_params.Set<bool>("use_xnnpack", true);
+      }
+      if (tool_params.HasParam("xnnpack_force_fp16")) {
+        tool_params.Set<bool>("xnnpack_force_fp16", true);
       }
       break;
     case TfliteInferenceParams::COREML:

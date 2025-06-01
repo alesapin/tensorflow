@@ -106,6 +106,7 @@ TfLiteStatus ResizeOutputTensors(TfLiteContext* context, TfLiteNode* node,
       TF_LITE_KERNEL_LOG(
           context,
           "The sum of size_splits must be less than the dimension of value.");
+      return kTfLiteError;
     } else {
       size_splits_vector[minus_one_index] = input_size - size_splits_sum;
     }
@@ -113,6 +114,7 @@ TfLiteStatus ResizeOutputTensors(TfLiteContext* context, TfLiteNode* node,
     TF_LITE_KERNEL_LOG(
         context,
         "The size_splits must sum to the dimension of value along axis.");
+    return kTfLiteError;
   }
 
   for (int i = 0; i < NumOutputs(node); ++i) {
@@ -133,6 +135,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), op_context.params->num_splits);
 
+  TF_LITE_ENSURE(context, op_context.input != nullptr);
   auto input_type = op_context.input->type;
   TF_LITE_ENSURE(context,
                  input_type == kTfLiteFloat32 || input_type == kTfLiteUInt8 ||

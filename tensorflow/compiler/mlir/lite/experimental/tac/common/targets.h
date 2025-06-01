@@ -17,6 +17,8 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_COMMON_TARGETS_H_
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -24,6 +26,7 @@ limitations under the License.
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 
 namespace mlir {
@@ -35,6 +38,12 @@ constexpr char kDevice[] = "tac.device";
 
 // Inference type.
 constexpr char kInferenceType[] = "tac.inference_type";
+
+// Inference type.
+constexpr char kSkipTargetAnnotation[] = "tac.skip_target_annotation";
+
+// Custom options fingerprint to apply different options for different filters.
+constexpr char kCustomOptionsFingerprint[] = "tac.custom_options_fingerprint";
 
 // TODO(renjieliu): Add more inference types.
 enum InferenceType {

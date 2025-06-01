@@ -12,6 +12,10 @@ tf_custom_op_library(
         "multiplex_4_kernel.cc",
         "multiplex_4_op.cc",
     ],
+    deps = [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+    ],
 )
 
 py_strict_library(
@@ -36,13 +40,11 @@ py_strict_library(
 tf_py_test(
     name = "multiplex_4_test",
     size = "medium",  # This test blocks because it writes and reads a file,
-    timeout = "short",  # but it still runs quickly.
     srcs = ["multiplex_4_test.py"],
     python_version = "PY3",
     srcs_version = "PY3",
     tags = [
         "no_mac",  # TODO(b/216321151): Re-enable this test.
-        "no_pip",
     ],
     deps = [
         ":model_using_multiplex",

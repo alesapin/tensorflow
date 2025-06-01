@@ -22,7 +22,6 @@ performance parity.
 import collections
 
 from tensorflow.core.framework import attr_value_pb2
-from tensorflow.core.function.capture import capture_container
 from tensorflow.python.client import pywrap_tf_session as c_api
 from tensorflow.python.eager import backprop_util
 from tensorflow.python.framework import auto_control_deps_utils as acd
@@ -31,6 +30,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import func_graph as func_graph_module
 from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
@@ -142,8 +142,6 @@ def while_loop(cond,
         return math_ops.logical_and(
             loop_counter < maximum_iterations_arg, pred)
 
-    # NOTE(skyewm): we set collections to the outer graph's collections for
-    # compatibility with TPUEstimator.
     cond_graph = func_graph_module.func_graph_from_py_func(
         cond_name,
         wrapped_cond,
@@ -323,7 +321,7 @@ def while_loop(cond,
 
 @ops.RegisterGradient("StatelessWhile")
 @ops.RegisterGradient("While")
-def _WhileGrad(op, *grads):  # pylint: disable=invalid-name
+def _WhileGrad(op: ops.Operation, *grads):  # pylint: disable=invalid-name
   """The gradient of a While op produced by while_loop."""
   # Note that op is not always the same as while_op because the gradient tape,
   # for eager mode compatibility, forgets information about the proper op. Since
@@ -806,7 +804,7 @@ def _get_structured_grad_output(outputs, grads, body_grad_graph):
           dense_shape=outputs[outputs_idx + 2]))
       outputs_idx += 3
     else:
-      assert isinstance(output, ops.Tensor)
+      assert isinstance(output, tensor_lib.Tensor)
       result.append(outputs[outputs_idx])
       outputs_idx += 1
 
@@ -1104,7 +1102,7 @@ class _WhileBodyGradFuncGraph(util.WhileBodyFuncGraph):
       return captured_tensor
 
     if tensor.graph is not self._forward_graph:
-      already_captured = id(tensor) in self.function_captures.by_val_captures
+      already_captured = id(tensor) in self.function_captures.by_val_internal
       captured_tensor = super(_WhileBodyGradFuncGraph, self)._capture_helper(
           tensor, name)
       if not already_captured:
@@ -1328,8 +1326,11 @@ def _duplicate_body_captures_in_cond(cond_graph, body_graph_captures):
   tuples = zip(body_graph_captures, tensors)
   keys = [id(t) for t in body_graph_captures]
   for k, v in zip(keys, tuples):
-    capture = capture_container.CaptureContainer(v[0], v[1], k, False)
-    cond_graph.function_captures._by_val[k] = capture  # pylint: disable=protected-access
+    cond_graph._function_captures.add_or_replace(
+        key=k,
+        external=v[0],
+        internal=v[1],
+        is_by_ref=False)
   cond_graph.inputs.extend(tensors)
 
 
@@ -1384,7 +1385,7 @@ def _is_loop_invariant(tensor, inputs, outputs):
           any(tensor is t for t in outputs))
 
 
-def _set_read_only_resource_inputs_attr(op, branch_graphs):
+def _set_read_only_resource_inputs_attr(op: ops.Operation, branch_graphs):
   """Sets the list of resource inputs which are read-only.
 
   This is used by AutomaticControlDependencies.
@@ -1403,5 +1404,61 @@ def _set_read_only_resource_inputs_attr(op, branch_graphs):
 
   ops.set_int_list_attr(op, acd.READ_ONLY_RESOURCE_INPUTS_ATTR,
                         sorted(read_only_indices))
+
+
+def async_noop(name=None):
+  """Returns a no-op that is implemented as an async kernel.
+
+  This operation may be useful to implement "aggressive inter-op parallelism"
+  because it will cause any immediate downstream operations to be scheduled
+  on different threads.
+
+  Args:
+    name: The name of the operation.
+  """
+
+  with ops.name_scope(name, "async_noop") as name:
+    cond_init_value = constant_op.constant(False, name="cond_init_value")
+
+    func_graph_signature = [tensor_spec.TensorSpec(shape=(), dtype=dtypes.bool)]
+
+    cond_graph = func_graph_module.func_graph_from_py_func(
+        "cond_graph",
+        lambda x: x,
+        [cond_init_value],
+        {},
+        signature=func_graph_signature,
+        func_graph=util.WhileCondFuncGraph(
+            "cond_graph", collections=ops.get_default_graph()._collections
+        ),  # pylint: disable=protected-access
+        add_control_dependencies=False,
+    )
+
+    body_graph = func_graph_module.func_graph_from_py_func(
+        "body_graph",
+        lambda x: x,
+        [cond_init_value],
+        {},
+        signature=func_graph_signature,
+        func_graph=util.WhileBodyFuncGraph(
+            "body_graph", collections=ops.get_default_graph()._collections
+        ),  # pylint: disable=protected-access
+        add_control_dependencies=False,
+    )
+
+    while_op, _ = util.get_op_and_outputs(
+        gen_functional_ops._while(
+            [cond_init_value],
+            util.create_new_tf_function(cond_graph),
+            util.create_new_tf_function(body_graph),
+            output_shapes=[[]],
+            name=name,
+        )
+    )
+
+    # Disable lowering using switch merge.
+    util.maybe_set_lowering_attr(while_op, lower_using_switch_merge=False)
+
+  return while_op
 
 # pylint: enable=protected-access

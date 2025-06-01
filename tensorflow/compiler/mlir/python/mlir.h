@@ -19,6 +19,7 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_MLIR_PYTHON_MLIR_H_
 
 #include <string>
+#include <vector>
 
 #include "absl/strings/string_view.h"
 #include "tensorflow/c/eager/c_api.h"

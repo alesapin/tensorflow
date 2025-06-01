@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/common_runtime/step_stats_collector.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/local_rendezvous.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/rendezvous.h"
 #include "tensorflow/core/framework/step_stats.pb.h"
@@ -45,7 +46,6 @@ limitations under the License.
 #include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
@@ -65,6 +65,10 @@ class ExecutorTest : public ::testing::Test {
     // LocalRendezvous::AsyncRecv() might still executing after done_callback
     // returns. Wait until the local rc_owner_ releases.
     while (!rendez_->RefCountIsOne()) {
+      LOG(INFO) << "Waiting for rendezvous to release. Current refcount: "
+                << rendez_->RefCount();
+      absl::SleepFor(absl::Milliseconds(200));
+      LocalRendezvous::ReleaseAbortedRendezvous();
     }
     // There should always be exactly one Ref left on the Rendezvous
     // when the test completes.
@@ -92,12 +96,17 @@ class ExecutorTest : public ::testing::Test {
     runner_ = [this](std::function<void()> fn) { thread_pool_->Schedule(fn); };
   }
 
-  Status Run(Rendezvous* rendez) {
+  absl::Status Run(Rendezvous* rendez) {
     Executor::Args args;
     args.rendezvous = rendez;
     args.stats_collector = &step_stats_collector_;
     args.runner = runner_;
     return exec_->Run(args);
+  }
+
+  const StepStats& GetStepStats() {
+    step_stats_collector_.Finalize();
+    return step_stats_;
   }
 
   thread::ThreadPool* thread_pool_ = nullptr;
@@ -179,6 +188,60 @@ TEST_F(ExecutorTest, SimpleAdd) {
   TF_ASSERT_OK(
       rendez_->Recv(Key(BOB, kIncarnation, ALICE, "c"), args, &out, &is_dead));
   EXPECT_EQ(2.0, V(out));  // out = 1.0 + 1.0 = 2.0
+}
+
+TEST_F(ExecutorTest, StepStatsNumerical) {
+  // Similar to SimpleAdd, but tests numerical values in StepStats
+
+  // c = a + b
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
+  auto in0 = test::graph::Recv(g.get(), "a", "float", ALICE, 1, BOB);
+  auto in1 = test::graph::Recv(g.get(), "b", "float", ALICE, 1, BOB);
+  auto tmp = test::graph::Add(g.get(), in0, in1);
+  test::graph::Send(g.get(), tmp, "c", BOB, 1, ALICE);
+  Create(std::move(g));
+  Rendezvous::Args args;
+  TF_ASSERT_OK(rendez_->Send(Key(ALICE, kIncarnation, BOB, "a"), args, V(1.0),
+                             false));  // in0 = 1.0
+  TF_ASSERT_OK(rendez_->Send(Key(ALICE, kIncarnation, BOB, "b"), args, V(1.0),
+                             false));  // in1 = 1.0
+  TF_ASSERT_OK(Run(rendez_));
+  Tensor out = V(-1);
+  bool is_dead = false;
+  TF_ASSERT_OK(
+      rendez_->Recv(Key(BOB, kIncarnation, ALICE, "c"), args, &out, &is_dead));
+  EXPECT_EQ(2.0, V(out));  // out = 1.0 + 1.0 = 2.0
+
+  auto& step_stats = GetStepStats();
+  EXPECT_EQ(1, step_stats.dev_stats_size());
+  for (const auto& dev_stat : step_stats.dev_stats()) {
+    EXPECT_EQ(2, dev_stat.node_stats_size());
+    for (const auto& node_stat : dev_stat.node_stats()) {
+      // scheduled_nanos <= all_start_nanos <= op_start_nanos <= op_end_nanos <=
+      // all_end_nanos
+      auto scheduled_nanos = node_stat.scheduled_nanos();
+      auto all_start_nanos = node_stat.all_start_nanos();
+      auto op_start_nanos = all_start_nanos + node_stat.op_start_rel_nanos();
+      auto op_end_nanos = all_start_nanos + node_stat.op_end_rel_nanos();
+      auto all_end_nanos = all_start_nanos + node_stat.all_end_rel_nanos();
+      EXPECT_LE(scheduled_nanos, all_start_nanos);
+      EXPECT_LE(all_start_nanos, op_start_nanos);
+      EXPECT_LE(op_start_nanos, op_end_nanos);
+      EXPECT_LE(op_end_nanos, all_end_nanos);
+
+      auto scheduled_micros = node_stat.scheduled_micros();
+      auto all_start_micros = node_stat.all_start_micros();
+      auto op_start_micros = all_start_micros + node_stat.op_start_rel_micros();
+      auto op_end_micros = all_start_micros + node_stat.op_end_rel_micros();
+      auto all_end_micros = all_start_micros + node_stat.all_end_rel_micros();
+      const int64_t kMicrosToNanos = 1000;
+      EXPECT_EQ(scheduled_nanos / kMicrosToNanos, scheduled_micros);
+      EXPECT_EQ(all_start_nanos / kMicrosToNanos, all_start_micros);
+      EXPECT_EQ(op_start_nanos / kMicrosToNanos, op_start_micros);
+      EXPECT_EQ(op_end_nanos / kMicrosToNanos, op_end_micros);
+      EXPECT_EQ(all_end_nanos / kMicrosToNanos, all_end_micros);
+    }
+  }
 }
 
 TEST_F(ExecutorTest, SelfAdd) {
@@ -352,22 +415,22 @@ TEST_F(ExecutorTest, Abort) {
   rendez_->Ref();
   SchedClosure([this]() {
     Env::Default()->SleepForMicroseconds(100 * 1000);
-    Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "a"),
-                             Rendezvous::Args(), V(1.0), false);
+    absl::Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "a"),
+                                   Rendezvous::Args(), V(1.0), false);
     rendez_->Unref();
   });
   rendez_->Ref();
   SchedClosure([this]() {
     Env::Default()->SleepForMicroseconds(100 * 1000);
-    Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "b"),
-                             Rendezvous::Args(), V(1.0), false);
+    absl::Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "b"),
+                                   Rendezvous::Args(), V(1.0), false);
     rendez_->Unref();
   });
   rendez_->Ref();
   SchedClosure([this]() {
     Env::Default()->SleepForMicroseconds(100 * 1000);
-    Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "c"),
-                             Rendezvous::Args(), V(1.0), false);
+    absl::Status s = rendez_->Send(Key(ALICE, kIncarnation, BOB, "c"),
+                                   Rendezvous::Args(), V(1.0), false);
     rendez_->Unref();
   });
   rendez_->Ref();
@@ -376,10 +439,10 @@ TEST_F(ExecutorTest, Abort) {
     rendez_->StartAbort(errors::Aborted(""));
     rendez_->Unref();
   });
-  EXPECT_TRUE(errors::IsAborted(Run(rendez_)));
+  EXPECT_TRUE(absl::IsAborted(Run(rendez_)));
   Tensor out = V(-1);
   bool is_dead = false;
-  EXPECT_TRUE(errors::IsAborted(rendez_->Recv(
+  EXPECT_TRUE(absl::IsAborted(rendez_->Recv(
       Key(BOB, kIncarnation, ALICE, "c"), Rendezvous::Args(), &out, &is_dead)));
   // At this point there can still be pending (albeit Aborted) Send
   // closures holding Refs on rendez_.  We need to wait for them, or
@@ -404,10 +467,10 @@ TEST_F(ExecutorTest, RecvInvalidDtype) {
   TF_ASSERT_OK(rendez->Send(Key(ALICE, 1, BOB, "one"), Rendezvous::Args(),
                             VD(1.0), false));
   // Fails due to invalid dtype.
-  EXPECT_TRUE(errors::IsInternal(Run(rendez)));
+  EXPECT_TRUE(absl::IsInternal(Run(rendez)));
   Tensor output;
   bool is_dead;
-  EXPECT_TRUE(errors::IsInternal(rendez->Recv(
+  EXPECT_TRUE(absl::IsInternal(rendez->Recv(
       Key(BOB, 1, ALICE, "two"), Rendezvous::Args(), &output, &is_dead)));
   rendez->Unref();
 }
@@ -419,10 +482,10 @@ TEST_F(ExecutorTest, RecvInvalidRefDtype) {
   test::graph::Send(g.get(), var, "out", BOB, 1, ALICE);
   Create(std::move(g));
   Rendezvous* rendez = NewLocalRendezvous();
-  EXPECT_TRUE(errors::IsInternal(Run(rendez)));
+  EXPECT_TRUE(absl::IsInternal(Run(rendez)));
   Tensor output;
   bool is_dead;
-  EXPECT_TRUE(errors::IsInternal(rendez->Recv(
+  EXPECT_TRUE(absl::IsInternal(rendez->Recv(
       Key(BOB, 1, ALICE, "out"), Rendezvous::Args(), &output, &is_dead)));
   rendez->Unref();
 }
@@ -539,10 +602,10 @@ static void BM_FeedInputFetchOutput(::testing::benchmark::State& state) {
 }
 BENCHMARK(BM_FeedInputFetchOutput);
 
-Status ReplaceEdgeWithSendRecv(Graph* g, const Edge* edge, const string& tensor,
-                               const string& sender,
-                               const uint64 sender_incarnation,
-                               const string& receiver) {
+absl::Status ReplaceEdgeWithSendRecv(Graph* g, const Edge* edge,
+                                     const string& tensor, const string& sender,
+                                     const uint64 sender_incarnation,
+                                     const string& receiver) {
   Node* send;
   NodeDef send_def;
   TF_CHECK_OK(NodeDefBuilder(g->NewName("n"), "_Send")
@@ -579,7 +642,7 @@ Status ReplaceEdgeWithSendRecv(Graph* g, const Edge* edge, const string& tensor,
   g->AddControlEdge(edge->src(), recv);
 
   g->RemoveEdge(edge);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // Defines a graph to perform the following computation:

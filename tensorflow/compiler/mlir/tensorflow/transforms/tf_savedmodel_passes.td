@@ -44,6 +44,19 @@ def FreezeGlobalTensorsPass : Pass<"tf-saved-model-freeze-global-tensors", "Modu
   ];
 }
 
+def UnfreezeMutableGlobalTensorsPass : Pass<"tf-saved-model-unfreeze-mutable-global-tensors", "ModuleOp"> {
+  let summary = "Unfreeze mutable global tensors.";
+
+  let description = [{
+    This pass "unfreezes" the use of global constant tensor ops found in the
+    module and converts them to tf.VarHandleOps. Also, an initialization pattern
+    tf.AssignVariableOp(tf.VarHandleOp, tf.ConstOp) is inserted to the
+    initializer function of type "init_op" for each of the unfrozen constants.
+  }];
+
+  let constructor = "::mlir::tf_saved_model::CreateUnfreezeMutableGlobalTensorsPass()";
+}
+
 def OptimizeGlobalTensorsPass : Pass<"tf-saved-model-optimize-global-tensors", "ModuleOp"> {
   let summary = "Optimize tf_saved_model.global_tensor's.";
 
@@ -161,4 +174,29 @@ def AddFunctionsForExportedNamesPass : Pass<"tf-saved-model-add-functions-for-ex
         func.func private @foo_internal()
   }];
   let constructor = "::mlir::tf_saved_model::CreateAddFunctionsForExportedNamesPass()";
+}
+
+def AssetSinkingPass : Pass<"tf-saved-model-asset-sinking", "mlir::ModuleOp"> {
+  let summary = "Sinks SavedModel asset filenames to constants";
+
+  let description = [{
+    This pass sinks arguments of SavedModel methods that are bounded to
+    `tf_saved_model.asset` into constants in the methods. After the pass, unused
+    asset ops are removed from the module.
+
+    This is to convert initialization methods with bound inputs into the same
+    methods without any arguments, so that program invocation doesn't need to
+    track and explicitly pass asset filenames.
+
+    This pass accepts an option `saved-model-dir`, which specifies the directory
+    where SavedModel is stored. This is a required option because all asset
+    filenames are relative to this directory.
+  }];
+
+  let constructor = "::mlir::tf_saved_model::CreateAssetSinkingPass(\"\")";
+
+  let options = [
+    Option<"saved_model_dir_", "saved-model-dir", "std::string", "",
+           "SavedModel directory, which is prepended to asset file names.">,
+  ];
 }

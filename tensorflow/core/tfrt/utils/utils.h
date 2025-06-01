@@ -15,7 +15,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_TFRT_UTILS_UTILS_H_
 #define TENSORFLOW_CORE_TFRT_UTILS_UTILS_H_
 
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -38,8 +41,8 @@ class BEFFile;
 class ExecutionContext;
 class HostContext;
 
-typedef tensorflow::gtl::InlinedVector<tfrt::DType, 4> TfrtDataTypeVector;
-typedef tensorflow::gtl::ArraySlice<tfrt::DType> TfrtDataTypeSlice;
+typedef absl::InlinedVector<tfrt::DType, 4UL> TfrtDataTypeVector;
+typedef absl::Span<const tfrt::DType> TfrtDataTypeSlice;
 
 DType ConvertTfDTypeToTfrtDType(tensorflow::DataType dtype);
 
@@ -49,9 +52,9 @@ DType ConvertTfDTypeToTfrtDType(tensorflow::DataType dtype);
 //
 // TODO(b/178714905): We should avoid special handling on initialization by
 // letting compiler to handle it.
-tensorflow::Status RunRuntimeInitializer(const tfrt::ExecutionContext& exec_ctx,
-                                         tfrt::BEFFile* bef_file,
-                                         absl::string_view fallback_init_func);
+absl::Status RunRuntimeInitializer(const tfrt::ExecutionContext& exec_ctx,
+                                   tfrt::BEFFile* bef_file,
+                                   absl::string_view fallback_init_func);
 
 // Creates dummy TF devices from the input device names. Currently this method
 // is used to create the TPU_SYSTEM device for worker server.
@@ -66,11 +69,14 @@ void AddDummyTfrtDevices(const std::vector<std::string>& device_names,
 
 // Creates a BEF file from a BEF buffer. `runtime` is used to provide host
 // context for opening `bef`.
-tensorflow::StatusOr<RCReference<tfrt::BEFFile>> CreateBefFileFromBefBuffer(
+absl::StatusOr<RCReference<tfrt::BEFFile>> CreateBefFileFromBefBuffer(
     const tensorflow::tfrt_stub::Runtime& runtime, const tfrt::BefBuffer& bef);
 
 // Returns a unique integer within this process.
 int64_t GetUniqueInt();
+
+// Returns current CPU time.
+uint64_t GetCpuClockCycle();
 
 // A list of macros similar to `TF_RETURN_IF_ERROR`, with additional model
 // loading stage info.
@@ -86,14 +92,14 @@ int64_t GetUniqueInt();
 #define RETURN_IF_ERROR_IN_INIT(...) \
   RETURN_IF_ERROR_WITH_STAGE_INFO("Initialize TFRT", __VA_ARGS__)
 
-#define RETURN_IF_ERROR_WITH_STAGE_INFO(stage, ...)                         \
-  do {                                                                      \
-    ::tensorflow::Status _status = (__VA_ARGS__);                           \
-    if (TF_PREDICT_FALSE(!_status.ok())) {                                  \
-      return ::tensorflow::errors::CreateWithUpdatedMessage(                \
-          _status, ::tensorflow::strings::StrCat(stage, ": ",               \
-                                                 _status.error_message())); \
-    }                                                                       \
+#define RETURN_IF_ERROR_WITH_STAGE_INFO(stage, ...)                       \
+  do {                                                                    \
+    ::tensorflow::Status _status = (__VA_ARGS__);                         \
+    if (TF_PREDICT_FALSE(!_status.ok())) {                                \
+      return ::tensorflow::errors::CreateWithUpdatedMessage(              \
+          _status,                                                        \
+          ::tensorflow::strings::StrCat(stage, ": ", _status.message())); \
+    }                                                                     \
   } while (0)
 
 // A list of macros similar to `TF_ASSIGN_OR_RETURN`, with additional model
@@ -115,14 +121,14 @@ int64_t GetUniqueInt();
       TF_STATUS_MACROS_CONCAT_NAME(_status_or_value, __COUNTER__), stage, lhs, \
       rexpr)
 
-#define ASSIGN_OR_RETURN_WITH_STAGE_INFO_IMPL(statusor, stage, lhs, rexpr)    \
-  auto statusor = (rexpr);                                                    \
-  if (TF_PREDICT_FALSE(!statusor.ok())) {                                     \
-    const auto& _status = statusor.status();                                  \
-    return ::tensorflow::errors::CreateWithUpdatedMessage(                    \
-        _status,                                                              \
-        ::tensorflow::strings::StrCat(stage, ": ", _status.error_message())); \
-  }                                                                           \
+#define ASSIGN_OR_RETURN_WITH_STAGE_INFO_IMPL(statusor, stage, lhs, rexpr) \
+  auto statusor = (rexpr);                                                 \
+  if (TF_PREDICT_FALSE(!statusor.ok())) {                                  \
+    const auto& _status = statusor.status();                               \
+    return ::tensorflow::errors::CreateWithUpdatedMessage(                 \
+        _status,                                                           \
+        ::tensorflow::strings::StrCat(stage, ": ", _status.message()));    \
+  }                                                                        \
   lhs = std::move(statusor.value())
 
 }  // namespace tfrt

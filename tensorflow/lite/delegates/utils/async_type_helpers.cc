@@ -15,11 +15,10 @@ limitations under the License.
 #include "tensorflow/lite/delegates/utils/async_type_helpers.h"
 
 #include <cstring>
-#include <string_view>
 
-#include "tensorflow/lite/core/async/interop/c/attribute_map.h"
-#include "tensorflow/lite/core/async/interop/c/constants.h"
-#include "tensorflow/lite/core/async/interop/c/types.h"
+#include "tensorflow/lite/async/interop/c/attribute_map.h"
+#include "tensorflow/lite/async/interop/c/constants.h"
+#include "tensorflow/lite/async/interop/c/types.h"
 #include "tensorflow/lite/delegates/utils/ret_macros.h"
 
 // TODO(b/191883048): Cleanup this file when refactoring the attribute map

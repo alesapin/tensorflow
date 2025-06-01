@@ -24,7 +24,7 @@ import os
 import time
 
 from tensorflow.python.checkpoint import checkpoint_management
-from tensorflow.python.distribute import distribution_strategy_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import io_ops
 from tensorflow.python.ops import resource_variable_ops
@@ -225,23 +225,22 @@ def checkpoints_iterator(checkpoint_dir,
   while True:
     new_checkpoint_path = wait_for_new_checkpoint(
         checkpoint_dir, checkpoint_path, timeout=timeout)
-    if new_checkpoint_path is None:
-      if not timeout_fn:
-        # timed out
-        logging.info("Timed-out waiting for a checkpoint.")
-        return
-      if timeout_fn():
-        # The timeout_fn indicated that we are truly done.
-        return
-      else:
-        # The timeout_fn indicated that more checkpoints may come.
-        continue
-    start = time.time()
-    checkpoint_path = new_checkpoint_path
-    yield checkpoint_path
-    time_to_next_eval = start + min_interval_secs - time.time()
-    if time_to_next_eval > 0:
-      time.sleep(time_to_next_eval)
+    if new_checkpoint_path:
+      start = time.time()
+      checkpoint_path = new_checkpoint_path
+      yield checkpoint_path
+      time_to_next_eval = start + min_interval_secs - time.time()
+      if time_to_next_eval > 0:
+        time.sleep(time_to_next_eval)
+    elif timeout_fn is None:
+      # No way to determine if any additional checkpoints will be generated.
+      logging.info("Timed-out waiting for a checkpoint (without timeout_fn).")
+      return
+    # Check if more new checkpoints may be generated.
+    if timeout_fn is not None and timeout_fn():
+      # The timeout_fn indicated that we are truly done.
+      logging.info("Done. No new checkpoints will be generated.")
+      return
 
 
 @tf_export(v1=["train.init_from_checkpoint"])
@@ -372,10 +371,10 @@ def init_from_checkpoint(ckpt_dir_or_file, assignment_map):
   """
   init_from_checkpoint_fn = lambda _: _init_from_checkpoint(
       ckpt_dir_or_file, assignment_map)
-  if distribution_strategy_context.get_cross_replica_context():
+  if distribute_lib.get_cross_replica_context():
     init_from_checkpoint_fn(None)
   else:
-    distribution_strategy_context.get_replica_context().merge_call(
+    distribute_lib.get_replica_context().merge_call(
         init_from_checkpoint_fn)
 
 

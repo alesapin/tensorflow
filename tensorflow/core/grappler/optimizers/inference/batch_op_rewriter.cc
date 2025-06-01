@@ -21,8 +21,10 @@ limitations under the License.
 #include "google/protobuf/wrappers.pb.h"
 #include "google/protobuf/map.h"
 #include "google/protobuf/repeated_field.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -139,7 +141,7 @@ Status BatchOpRewriter::Init(
   // Parse the config from params. Fail if its missing or fails to parse.
   if (config->parameter_map().find(kBatchOpRewriteConfigParamKey) ==
       config->parameter_map().end()) {
-    return ::tensorflow::errors::Internal(
+    return absl::InternalError(
         "batch_op_rewrite_config param must be set in the rewriter config "
         "with a serialized/encoded BatchOpRewriteConfig.");
   }
@@ -151,18 +153,18 @@ Status BatchOpRewriter::Init(
     // (e.g., enable_adaptive_shared_batching_thread_pool is false), proto
     // is considered as empty.
     VLOG(2) << "Empty batch-op rewrite config";
-    return OkStatus();
+    return absl::OkStatus();
   }
   if (!absl::Base64Unescape(params.s(), &unencoded)) {
-    return ::tensorflow::errors::Internal(
+    return absl::InternalError(
         "Failed to unencode batch_op_rewrite_config from params.");
   }
   if (!config_.ParseFromString(unencoded)) {
-    return ::tensorflow::errors::Internal(
+    return absl::InternalError(
         "Failed to parse batch_op_rewrite_config from params.");
   }
   VLOG(2) << "BatchOp Rewrite config is " << config_.DebugString();
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
@@ -177,7 +179,7 @@ Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
         config_proto_.experimental().session_metadata().name();
 
     if (!config_.model_scheduler_options().empty()) {
-      return ::tensorflow::errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "model_scheduler_options is deprecated. Please use the "
           "adaptive_batch_scheduler_option field in batch_options instead.");
     }
@@ -197,13 +199,13 @@ Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
         if ((params.min_inflight_batches > params.max_inflight_batches) ||
             (params.initial_inflight_batches < params.min_inflight_batches) ||
             (params.initial_inflight_batches > params.max_inflight_batches)) {
-          return errors ::InvalidArgument(
+          return absl::InvalidArgumentError(absl::StrCat(
               "Requires min_inflight_batches <= initial_inflight_batches "
               "and initial_inflight_batches <= max_inflight_batches; Got "
               "{min_inflight_batches : ",
               params.min_inflight_batches,
               ", initial_inflight_batches : ", params.initial_inflight_batches,
-              ", max_inflight_batches : ", params.max_inflight_batches, "}.");
+              ", max_inflight_batches : ", params.max_inflight_batches, "}."));
         }
 
         asbs_overridden = true;
@@ -220,7 +222,7 @@ Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
       if (config_.enable_adaptive_shared_batching_thread_pool() &&
           !asbs_overridden && batch_options.has_num_batch_threads() &&
           batch_options.num_batch_threads() != 0) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "Unable to enable adapative shared batching because it requires "
             "num_batch_threads=0 but the BatchOpRewriteConfig is also trying "
             "to set num_batch_threads. Set either set "
@@ -269,7 +271,7 @@ Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
   }
 
   if (asbs_overridden) {
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   if (config_.enable_adaptive_shared_batching_thread_pool()) {
@@ -279,7 +281,35 @@ Status BatchOpRewriter::Optimize(Cluster* cluster, const GrapplerItem& item,
                                                   batch_op);
     });
   }
-  return OkStatus();
+
+  if (config_.has_global_prioritization()) {
+    absl::flat_hash_map<std::string, std::string> copy_attrs = {
+        {"max_batch_size", "low_priority_max_batch_size"},
+        {"batch_timeout_micros", "low_priority_batch_timeout_micros"},
+        {"allowed_batch_sizes", "low_priority_allowed_batch_sizes"},
+        {"max_enqueued_batches", "low_priority_max_enqueued_batches"}};
+
+    UpdateBatchOps(optimized_graph, [&](NodeDef* batch_op) {
+      ::tensorflow::graph_transforms::SetNodeAttr(
+          kNumBatchThreadsAttr, config_.global_prioritization().num_threads(),
+          batch_op);
+      ::tensorflow::graph_transforms::SetNodeAttr("mixed_priority_policy",
+                                                  "priority_merge", batch_op);
+
+      // Default queue options for the low priority queue will be copied from
+      // the high priority queue if the model doesn't explicitly set low
+      // priority queue options.
+      for (const auto& [attr_name, low_priority_attr_name] : copy_attrs) {
+        if (batch_op->attr().contains(attr_name) &&
+            !batch_op->attr().contains(low_priority_attr_name)) {
+          ::tensorflow::graph_transforms::SetNodeAttr(
+              low_priority_attr_name, batch_op->attr().at(attr_name), batch_op);
+        }
+      }
+    });
+  }
+
+  return absl::OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(BatchOpRewriter, "batch_op_rewrite");

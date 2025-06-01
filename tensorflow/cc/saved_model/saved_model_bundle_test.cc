@@ -185,13 +185,13 @@ TEST_F(LoaderTest, NoTagMatch) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {"missing-tag"}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {"missing-tag"}, &bundle);
   EXPECT_FALSE(st.ok());
   EXPECT_TRUE(absl::StrContains(
-      st.error_message(),
+      st.message(),
       "Could not find meta graph def matching supplied tags: { missing-tag }"))
-      << st.error_message();
+      << st.message();
 }
 
 TEST_F(LoaderTest, NoTagMatchMultiple) {
@@ -201,13 +201,13 @@ TEST_F(LoaderTest, NoTagMatchMultiple) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe, "missing-tag"}, &bundle);
+  absl::Status st =
+      LoadSavedModel(session_options, run_options, export_dir,
+                     {kSavedModelTagServe, "missing-tag"}, &bundle);
   EXPECT_FALSE(st.ok());
   EXPECT_TRUE(absl::StrContains(
-      st.error_message(),
-      "Could not find meta graph def matching supplied tags: "))
-      << st.error_message();
+      st.message(), "Could not find meta graph def matching supplied tags: "))
+      << st.message();
 }
 
 TEST_F(LoaderTest, SessionCreationFailure) {
@@ -221,11 +221,10 @@ TEST_F(LoaderTest, SessionCreationFailure) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_TRUE(absl::StrContains(st.error_message(), kInvalidTarget))
-      << st.error_message();
+  EXPECT_TRUE(absl::StrContains(st.message(), kInvalidTarget)) << st.message();
 }
 
 TEST_F(LoaderTest, PbtxtFormat) {
@@ -259,8 +258,8 @@ TEST_F(LoaderTest, InvalidExportPath) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), "missing-path");
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
 }
 
@@ -314,12 +313,11 @@ TEST_F(LoaderTest, NegativeShapeDimension) {
 
   const string export_dir = io::JoinPath(testing::TensorFlowSrcRoot(),
                                          kTestFuzzGeneratedNegativeShape);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_NE(
-      st.error_message().find("initializes from a tensor with -1 elements"),
-      std::string::npos);
+  EXPECT_NE(st.message().find("initializes from a tensor with -1 elements"),
+            std::string::npos);
 }
 
 TEST_F(LoaderTest, ConstNoValue) {
@@ -329,12 +327,11 @@ TEST_F(LoaderTest, ConstNoValue) {
 
   const string export_dir = io::JoinPath(testing::TensorFlowSrcRoot(),
                                          kTestFuzzGeneratedConstWithNoValue);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_NE(
-      st.error_message().find("constant tensor but no value has been provided"),
-      std::string::npos);
+  EXPECT_NE(st.message().find("constant tensor but no value has been provided"),
+            std::string::npos);
 }
 
 TEST_F(LoaderTest, BadNodeAttr) {
@@ -344,12 +341,11 @@ TEST_F(LoaderTest, BadNodeAttr) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kTestFuzzGeneratedBadNodeAttr);
-  Status st = LoadSavedModel(session_options, run_options, export_dir,
-                             {kSavedModelTagServe}, &bundle);
+  absl::Status st = LoadSavedModel(session_options, run_options, export_dir,
+                                   {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_NE(
-      st.error_message().find("constant tensor but no value has been provided"),
-      std::string::npos);
+  EXPECT_NE(st.message().find("constant tensor but no value has been provided"),
+            std::string::npos);
 }
 
 TEST_F(LoaderTest, UpdateMetricsV2) {

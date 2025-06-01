@@ -14,13 +14,14 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/quantization/tensorflow/cc/save_variables.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -28,13 +29,13 @@ limitations under the License.
 #include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_saved_model.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/status_matchers.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/util/tensor_bundle/tensor_bundle.h"
-#include "tensorflow/tsl/platform/status.h"
-#include "tensorflow/tsl/platform/status_matchers.h"
 
 namespace tensorflow {
 namespace quantization {
@@ -114,8 +115,7 @@ TEST_F(SaveVariablesToCheckpointTest, VariableSavedToCheckpoint) {
   BundleReader bundle_reader(env_, *checkpoint_prefix);
 
   Tensor loaded_tensor{};
-  EXPECT_TRUE(
-      tsl::ToAbslStatus(bundle_reader.Lookup("var_0", &loaded_tensor)).ok());
+  EXPECT_TRUE(bundle_reader.Lookup("var_0", &loaded_tensor).ok());
 
   ExpectEqual(loaded_tensor, AsTensor<float>({1.0, 2.0}));
 }
@@ -161,13 +161,11 @@ TEST_F(SaveVariablesToCheckpointTest, MultipleVariablesSavedToCheckpoint) {
   BundleReader bundle_reader(env_, *checkpoint_prefix);
 
   Tensor loaded_var_0{};
-  EXPECT_TRUE(
-      tsl::ToAbslStatus(bundle_reader.Lookup("var_0", &loaded_var_0)).ok());
+  EXPECT_TRUE(bundle_reader.Lookup("var_0", &loaded_var_0).ok());
   ExpectEqual(loaded_var_0, AsTensor<float>({1.0, 2.0}));
 
   Tensor loaded_var_1{};
-  EXPECT_TRUE(
-      tsl::ToAbslStatus(bundle_reader.Lookup("var_1", &loaded_var_1)).ok());
+  EXPECT_TRUE(bundle_reader.Lookup("var_1", &loaded_var_1).ok());
   ExpectEqual(loaded_var_1, AsTensor<int>({3, 4, 5, 6}));
 }
 

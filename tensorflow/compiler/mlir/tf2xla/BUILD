@@ -23,6 +23,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/compiler/jit:flags",
+        "//tensorflow/core:framework",
         "//tensorflow/core:graph",
         "//tensorflow/core:protos_all_cc",
         "@com_google_absl//absl/types:optional",
@@ -32,23 +33,5 @@ cc_library(
 
 alias(
     name = "compile_mlir_util",
-    actual = "//tensorflow/compiler/mlir/tf2xla/api/v0:compile_mlir_util_no_tf_dialect_passes",
+    actual = "//tensorflow/compiler/mlir/tf2xla/api/v1:compile_mlir_util_no_tf_dialect_passes",
 )
-
-# Targets in the transform package we alias here to avoid updating all clients.
-aliased_targets = [
-    "legalize_tf",
-    "legalize_utils",
-    "tf_xla_passes",
-    "xla_legalize_tf",
-    "xla_legalize_tf_no_fallback",
-    "xla_legalize_tf_with_tf2xla",
-]
-
-[
-    alias(
-        name = target,
-        actual = "//tensorflow/compiler/mlir/tf2xla/transforms:%s" % target,
-    )
-    for target in aliased_targets
-]

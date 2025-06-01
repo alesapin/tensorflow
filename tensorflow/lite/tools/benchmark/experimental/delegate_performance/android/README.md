@@ -128,6 +128,7 @@ to the file directory of Delegate Performance Benchmark:
 
     ```
     adb shell 'echo "{
+      \"delegate\": \"NONE\",  // Replace NONE with the test target delegate type.
       \"stable_delegate_loader_settings\": {
         \"delegate_path\": \"/data/data/org.tensorflow.lite.benchmark.delegateperformance/files/libtensorflowlite_sample_stable_delegate.so\"
       }
@@ -160,7 +161,7 @@ delegate.
 
 -   `tflite_settings_files`: `str` (required) the comma-delimited paths to the
     JSON-encoded delegate `TFLiteSettings` file(s), which is defined in
-    [configuration.proto](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/experimental/acceleration/configuration/configuration.proto).
+    [configuration.proto](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/acceleration/configuration/configuration.proto).
 -   Additional optional command-line flags are documented
     [here](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/tools/benchmark/README.md)
     and can be appended to the `args` string (note that all args must be nested
@@ -178,7 +179,8 @@ of the test target delegate and a reference delegate breach the thresholds:
 1.  Average inference latency: average time for the inferences after warmup in
     the benchmark run.
 
-Please see
+When the test target delegate type is the same as the reference delegate, the
+checks are more strict. Otherwise, the checks are relaxed. Please see
 [BenchmarkResultType.java](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/tools/benchmark/experimental/delegate_performance/android/src/main/java/org/tensorflow/lite/benchmark/delegateperformance/BenchmarkResultType.java)
 for the meanings of `PASS`, `PASS_WITH_WARNING` and `FAIL`.
 
@@ -225,46 +227,46 @@ for the meanings of `PASS`, `PASS_WITH_WARNING` and `FAIL`.
     Summary | FAIL
     ------- | ----
 
-    Model                      | Metric                                         | Delegate: NONE (/data/local/tmp/stable_delegate_settings.json) | Delegate: NONE (default_delegate) | Change    | Status
-    -------------------------- | ---------------------------------------------- | -------------------------------------------------------------- | --------------------------------- | --------- | ------
-    mobilenet_v1_1.0_224       | model_size_megabyte                            | -1.0E-6                                                        | -1.0E-6                           | 0.0%      | N/A
-    mobilenet_v1_1.0_224       | initialization_latency_us                      | 515667.0                                                       | 844938.0                          | -39.0%    | N/A
-    mobilenet_v1_1.0_224       | warmup_latency_average_us                      | 334263.5                                                       | 1666704.0                         | -79.9%    | N/A
-    mobilenet_v1_1.0_224       | warmup_latency_min_us                          | 318494.0                                                       | 1666704.0                         | -80.9%    | N/A
-    mobilenet_v1_1.0_224       | warmup_latency_max_us                          | 350033.0                                                       | 1666704.0                         | -79.0%    | N/A
-    mobilenet_v1_1.0_224       | warmup_latency_standard_deviation_us           | 15769.0                                                        | 0.0                               | Infinity% | N/A
-    mobilenet_v1_1.0_224       | inference_latency_average_us                   | 316702.6                                                       | 630715.5                          | -49.8%    | PASS
-    mobilenet_v1_1.0_224       | inference_latency_min_us                       | 308218.0                                                       | 314117.0                          | -1.9%     | N/A
-    mobilenet_v1_1.0_224       | inference_latency_max_us                       | 338494.0                                                       | 1601144.0                         | -78.9%    | N/A
-    mobilenet_v1_1.0_224       | inference_latency_standard_deviation_us        | 4896.0                                                         | 347805.0                          | -98.6%    | N/A
-    mobilenet_v1_1.0_224       | initialization_memory_max_rss_mebibyte         | 0.0                                                            | 34.48828                          | -100.0%   | N/A
-    mobilenet_v1_1.0_224       | initialization_memory_total_allocated_mebibyte | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224       | initialization_memory_in_use_mebibyte          | 26.140594                                                      | 21.560455                         | 21.2%     | N/A
-    mobilenet_v1_1.0_224       | overall_memory_max_rss_mebibyte                | 0.0                                                            | 50.371094                         | -100.0%   | N/A
-    mobilenet_v1_1.0_224       | overall_memory_total_allocated_mebibyte        | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224       | overall_memory_in_use_mebibyte                 | 28.22168                                                       | 23.295578                         | 21.1%     | N/A
-    mobilenet_v1_1.0_224       | startup_overhead_latency_us                    | 533227.9                                                       | 1880926.5                         | -71.7%    | PASS
-    mobilenet_v1_1.0_224       | delegate_summary                               |                                                                |                                   |           | PASS
-    mobilenet_v1_1.0_224       | model_summary                                  | PASS                                                           |                                   |           |
-    mobilenet_v1_1.0_224_quant | model_size_megabyte                            | -1.0E-6                                                        | -1.0E-6                           | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | initialization_latency_us                      | 25318.0                                                        | 8271.0                            | 206.1%    | N/A
-    mobilenet_v1_1.0_224_quant | warmup_latency_average_us                      | 189565.0                                                       | 188034.0                          | 0.8%      | N/A
-    mobilenet_v1_1.0_224_quant | warmup_latency_min_us                          | 181333.0                                                       | 175592.0                          | 3.3%      | N/A
-    mobilenet_v1_1.0_224_quant | warmup_latency_max_us                          | 199285.0                                                       | 199388.0                          | -0.1%     | N/A
-    mobilenet_v1_1.0_224_quant | warmup_latency_standard_deviation_us           | 7404.0                                                         | 9745.0                            | -24.0%    | N/A
-    mobilenet_v1_1.0_224_quant | inference_latency_average_us                   | 178905.2                                                       | 178897.69                         | 0.0%      | PASS_WITH_WARNING
-    mobilenet_v1_1.0_224_quant | inference_latency_min_us                       | 170126.0                                                       | 170102.0                          | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | inference_latency_max_us                       | 200089.0                                                       | 193949.0                          | 3.2%      | N/A
-    mobilenet_v1_1.0_224_quant | inference_latency_standard_deviation_us        | 6355.0                                                         | 6387.0                            | -0.5%     | N/A
-    mobilenet_v1_1.0_224_quant | initialization_memory_max_rss_mebibyte         | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | initialization_memory_total_allocated_mebibyte | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | initialization_memory_in_use_mebibyte          | 1.4762268                                                      | 1.4715118                         | 0.3%      | N/A
-    mobilenet_v1_1.0_224_quant | overall_memory_max_rss_mebibyte                | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | overall_memory_total_allocated_mebibyte        | 0.0                                                            | 0.0                               | 0.0%      | N/A
-    mobilenet_v1_1.0_224_quant | overall_memory_in_use_mebibyte                 | 3.3774261                                                      | 3.38266                           | -0.2%     | N/A
-    mobilenet_v1_1.0_224_quant | startup_overhead_latency_us                    | 35977.797                                                      | 17407.312                         | 106.7%    | FAIL
-    mobilenet_v1_1.0_224_quant | delegate_summary                               |                                                                |                                   |           | FAIL
-    mobilenet_v1_1.0_224_quant | model_summary                                  | FAIL                                                           |                                   |           |
+    Model                      | Metric                                                | Delegate: NONE (/data/local/tmp/stable_delegate_settings.json) | Delegate: NONE (default_delegate) | Change    | Status
+    -------------------------- | ----------------------------------------------------- | -------------------------------------------------------------- | --------------------------------- | --------- | ------
+    mobilenet_v1_1.0_224       | model_size_megabyte                                   | -1.0E-6                                                        | -1.0E-6                           | 0.0%      | N/A
+    mobilenet_v1_1.0_224       | initialization_latency_us                             | 515667.0                                                       | 844938.0                          | -39.0%    | N/A
+    mobilenet_v1_1.0_224       | warmup_latency_average_us                             | 334263.5                                                       | 1666704.0                         | -79.9%    | N/A
+    mobilenet_v1_1.0_224       | warmup_latency_min_us                                 | 318494.0                                                       | 1666704.0                         | -80.9%    | N/A
+    mobilenet_v1_1.0_224       | warmup_latency_max_us                                 | 350033.0                                                       | 1666704.0                         | -79.0%    | N/A
+    mobilenet_v1_1.0_224       | warmup_latency_standard_deviation_us                  | 15769.0                                                        | 0.0                               | Infinity% | N/A
+    mobilenet_v1_1.0_224       | inference_latency_average_us                          | 316702.6                                                       | 630715.5                          | -49.8%    | PASS
+    mobilenet_v1_1.0_224       | inference_latency_min_us                              | 308218.0                                                       | 314117.0                          | -1.9%     | N/A
+    mobilenet_v1_1.0_224       | inference_latency_max_us                              | 338494.0                                                       | 1601144.0                         | -78.9%    | N/A
+    mobilenet_v1_1.0_224       | inference_latency_standard_deviation_us               | 4896.0                                                         | 347805.0                          | -98.6%    | N/A
+    mobilenet_v1_1.0_224       | initialization_memory_max_rss_mebibyte                | 0.0                                                            | 34.48828                          | -100.0%   | N/A
+    mobilenet_v1_1.0_224       | initialization_memory_total_non_mmapped_heap_mebibyte | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224       | initialization_memory_in_use_heap_mebibyte            | 26.140594                                                      | 21.560455                         | 21.2%     | N/A
+    mobilenet_v1_1.0_224       | overall_memory_max_rss_mebibyte                       | 0.0                                                            | 50.371094                         | -100.0%   | N/A
+    mobilenet_v1_1.0_224       | overall_memory_total_non_mmapped_heap_mebibyte        | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224       | overall_memory_in_use_heap_mebibyte                   | 28.22168                                                       | 23.295578                         | 21.1%     | N/A
+    mobilenet_v1_1.0_224       | startup_overhead_latency_us                           | 533227.9                                                       | 1880926.5                         | -71.7%    | PASS
+    mobilenet_v1_1.0_224       | delegate_summary                                      |                                                                |                                   |           | PASS (strict)
+    mobilenet_v1_1.0_224       | model_summary                                         | PASS                                                           |                                   |           |
+    mobilenet_v1_1.0_224_quant | model_size_megabyte                                   | -1.0E-6                                                        | -1.0E-6                           | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | initialization_latency_us                             | 25318.0                                                        | 8271.0                            | 206.1%    | N/A
+    mobilenet_v1_1.0_224_quant | warmup_latency_average_us                             | 189565.0                                                       | 188034.0                          | 0.8%      | N/A
+    mobilenet_v1_1.0_224_quant | warmup_latency_min_us                                 | 181333.0                                                       | 175592.0                          | 3.3%      | N/A
+    mobilenet_v1_1.0_224_quant | warmup_latency_max_us                                 | 199285.0                                                       | 199388.0                          | -0.1%     | N/A
+    mobilenet_v1_1.0_224_quant | warmup_latency_standard_deviation_us                  | 7404.0                                                         | 9745.0                            | -24.0%    | N/A
+    mobilenet_v1_1.0_224_quant | inference_latency_average_us                          | 178905.2                                                       | 178897.69                         | 0.0%      | PASS_WITH_WARNING
+    mobilenet_v1_1.0_224_quant | inference_latency_min_us                              | 170126.0                                                       | 170102.0                          | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | inference_latency_max_us                              | 200089.0                                                       | 193949.0                          | 3.2%      | N/A
+    mobilenet_v1_1.0_224_quant | inference_latency_standard_deviation_us               | 6355.0                                                         | 6387.0                            | -0.5%     | N/A
+    mobilenet_v1_1.0_224_quant | initialization_memory_max_rss_mebibyte                | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | initialization_memory_total_non_mmapped_heap_mebibyte | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | initialization_memory_in_use_heap_mebibyte            | 1.4762268                                                      | 1.4715118                         | 0.3%      | N/A
+    mobilenet_v1_1.0_224_quant | overall_memory_max_rss_mebibyte                       | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | overall_memory_total_non_mmapped_heap_mebibyte        | 0.0                                                            | 0.0                               | 0.0%      | N/A
+    mobilenet_v1_1.0_224_quant | overall_memory_in_use_heap_mebibyte                   | 3.3774261                                                      | 3.38266                           | -0.2%     | N/A
+    mobilenet_v1_1.0_224_quant | startup_overhead_latency_us                           | 35977.797                                                      | 17407.312                         | 106.7%    | FAIL
+    mobilenet_v1_1.0_224_quant | delegate_summary                                      |                                                                |                                   |           | FAIL (strict)
+    mobilenet_v1_1.0_224_quant | model_summary                                         | FAIL                                                           |                                   |           |
 
 #### Accuracy benchmarking
 
@@ -272,7 +274,7 @@ for the meanings of `PASS`, `PASS_WITH_WARNING` and `FAIL`.
 
 -   `tflite_settings_files`: `str` (required) the comma-delimited paths to the
     JSON-encoded delegate `TFLiteSettings` file(s), which is defined in
-    [configuration.proto](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/experimental/acceleration/configuration/configuration.proto).
+    [configuration.proto](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/acceleration/configuration/configuration.proto).
     The first path is the test target delegate and all other paths are treated
     as reference delegates. The test target delegate will be compared against
     each reference delegate.
@@ -285,7 +287,8 @@ models. The metric scripts generate an "ok" result by aggregating the outcomes
 for every model and every delegate. The accuracy benchmark generates a `PASS`,
 `PASS_WITH_WARNING`, or `FAIL` recommendation by aggregating the "ok" results.
 
-Please see
+When the test target delegate type is the same as the reference delegate, the
+checks are more strict. Otherwise, the checks are relaxed. Please see
 [BenchmarkResultType.java](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/tools/benchmark/experimental/delegate_performance/android/src/main/java/org/tensorflow/lite/benchmark/delegateperformance/BenchmarkResultType.java)
 for the meanings of `PASS`, `PASS_WITH_WARNING` and `FAIL`.
 
@@ -325,11 +328,25 @@ for the meanings of `PASS`, `PASS_WITH_WARNING` and `FAIL`.
     mobilenet_v1_1.0_224_quant_with_validation | symmetric_kl_divergence(average) | 0.049423933                                                    | 0.049423933                       | 0.0%   | N/A
     mobilenet_v1_1.0_224_quant_with_validation | ok                               | 0.0                                                            | 0.0                               | N/A    | PASS
     mobilenet_v1_1.0_224_quant_with_validation | max_memory_kb                    | 0.0                                                            | 0.0                               | 0.0%   | N/A
-    mobilenet_v1_1.0_224_quant_with_validation | delegate_summary                 |                                                                |                                   |        | PASS
+    mobilenet_v1_1.0_224_quant_with_validation | delegate_summary                 |                                                                |                                   |        | PASS (strict)
     mobilenet_v1_1.0_224_quant_with_validation | model_summary                    | PASS                                                           |                                   |        |
     mobilenet_v1_1.0_224_with_validation       | mse(average)                     | 1.0577066E-16                                                  | 1.0577066E-16                     | 0.0%   | N/A
     mobilenet_v1_1.0_224_with_validation       | symmetric_kl_divergence(average) | 7.2540787E-9                                                   | 7.2540787E-9                      | 0.0%   | N/A
     mobilenet_v1_1.0_224_with_validation       | ok                               | 0.0                                                            | 0.0                               | N/A    | PASS
     mobilenet_v1_1.0_224_with_validation       | max_memory_kb                    | 0.0                                                            | 0.0                               | 0.0%   | N/A
-    mobilenet_v1_1.0_224_with_validation       | delegate_summary                 |                                                                |                                   |        | PASS
+    mobilenet_v1_1.0_224_with_validation       | delegate_summary                 |                                                                |                                   |        | PASS (strict)
     mobilenet_v1_1.0_224_with_validation       | model_summary                    | PASS                                                           |                                   |        |
+
+## FAQ
+
+### 1. What does a delegate summary result with a `(strict)` suffix mean?
+
+The `(strict)` suffix is added to reference delegates that have the same
+delegate type as the test target delegate. The purpose of the suffix is to let a
+user know that the performance metrics are being checked to a higher standard.
+The expectation is that the test target delegate is better, or at least not
+substantially worse, than the reference delegate in all metrics.
+
+Please see
+[BenchmarkResultType.java](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/tools/benchmark/experimental/delegate_performance/android/src/main/java/org/tensorflow/lite/benchmark/delegateperformance/BenchmarkResultType.java)
+for more details.

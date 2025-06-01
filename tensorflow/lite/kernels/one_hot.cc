@@ -129,6 +129,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
   OneHotContext op_context{context, node};
+  TF_LITE_ENSURE(context, op_context.output != nullptr);
   switch (op_context.dtype) {
     // TODO(b/111744875): Support uint8 and quantization.
     case kTfLiteFloat32:
@@ -169,7 +170,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   OneHotContext op_context{context, node};
 
   if (IsDynamicTensor(op_context.output)) {
-    ResizeOutputTensor(context, op_context);
+    TF_LITE_ENSURE_OK(context, ResizeOutputTensor(context, op_context));
   }
 
   switch (op_context.output->type) {

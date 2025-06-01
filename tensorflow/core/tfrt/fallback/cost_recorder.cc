@@ -14,10 +14,15 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/fallback/cost_recorder.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/status.h"
@@ -27,14 +32,13 @@ limitations under the License.
 namespace tensorflow {
 namespace tfrt_stub {
 
-void CostRecorder::RecordCostNanosecond(int64_t op_key,
-                                        uint64_t execution_time_ns) {
+void CostRecorder::RecordCost(int64_t op_key, uint64_t execution_time) {
   mutex_lock l(op_cost_map_mutex_);
-  op_cost_map_[op_key].first += execution_time_ns;
+  op_cost_map_[op_key].first += execution_time;
   op_cost_map_[op_key].second += 1;
 }
 
-uint64_t CostRecorder::GetCostNanosecond(int64_t op_key) const {
+uint64_t CostRecorder::GetCost(int64_t op_key) const {
   tf_shared_lock l(op_cost_map_mutex_);
 
   const auto iter = op_cost_map_.find(op_key);
@@ -43,10 +47,16 @@ uint64_t CostRecorder::GetCostNanosecond(int64_t op_key) const {
   const auto total_cost = iter->second.first;
   const auto num_ops = iter->second.second;
 
-  return total_cost / num_ops;
+  auto r =
+      std::max(static_cast<uint64_t>(1),
+               static_cast<uint64_t>(total_cost / num_ops));
+
+  VLOG(2) << "Get cost for op_key=" << op_key << ", cost=" << r;
+
+  return r;
 }
 
-Status CostRecorder::WriteToFile() const {
+absl::Status CostRecorder::WriteToFile() const {
   OpCostMapProto op_cost_map_proto;
   {
     tf_shared_lock l(op_cost_map_mutex_);

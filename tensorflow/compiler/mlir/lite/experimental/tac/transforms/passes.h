@@ -16,12 +16,16 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_TRANSFORMS_PASSES_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_TRANSFORMS_PASSES_H_
 
+#include <functional>
 #include <memory>
 #include <string>
 
+#include "llvm/ADT/ArrayRef.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/experimental/tac/tac_filter.pb.h"
 
 namespace mlir {
 namespace TFL {
@@ -63,6 +67,14 @@ std::unique_ptr<OperationPass<func::FuncOp>> CreateGetOpCostPass();
 // Create an instance of FoldConstantsToSubgraphPass.
 std::unique_ptr<OperationPass<ModuleOp>> CreateFoldConstantsToSubgraphPass(
     bool fold_all_constants);
+
+// Create an instance of TacFilterPass.
+std::unique_ptr<OperationPass<ModuleOp>> CreateTacFilterPass(
+    ::third_party::tensorflow::compiler::mlir::lite::experimental::tac::
+        TacFilters* tac_filters,
+    std::function<void(mlir::Operation* op,
+                       const google::protobuf::Any& custom_options)>
+        custom_options_callback);
 
 }  // namespace tac
 }  // namespace TFL
