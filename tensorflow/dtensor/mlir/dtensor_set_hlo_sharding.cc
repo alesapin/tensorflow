@@ -23,6 +23,7 @@ limitations under the License.
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "xla/xla_data.pb.h"
 #include "tensorflow/dtensor/cc/xla_spmd/layout_to_xla_sharding.h"
 #include "tensorflow/dtensor/mlir/dtensor_dialect/ir/dialect.h"
 #include "tensorflow/dtensor/mlir/ir/tf_dtensor.h"
@@ -58,7 +59,7 @@ mlir::LogicalResult SetHloShardingForInputs(mlir::ModuleOp module,
         StatusOr<xla::OpSharding> xla_sharding =
             ConvertLayoutToXlaOpSharding(layout_op.getLayout());
         if (!xla_sharding.ok()) {
-          return layout_op.emitError(xla_sharding.status().error_message());
+          return layout_op.emitError(xla_sharding.status().message());
         }
         func_op.setArgAttr(
             arg_index, kXlaShardingAttr,
@@ -87,7 +88,7 @@ mlir::LogicalResult SetHloShardingForOutputs(mlir::ModuleOp module,
               ConvertLayoutToXlaOpSharding(layout_op.getLayout());
 
           if (!xla_sharding.ok()) {
-            return module.emitError(xla_sharding.status().error_message());
+            return module.emitError(xla_sharding.status().message());
           }
 
           mlir::func::FuncOp func_op =

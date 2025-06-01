@@ -14,10 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/validator_runner_options.h"
 
+#include <cstdint>
 #include <string>
 
 #include "absl/strings/str_cat.h"
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
+#include "tensorflow/lite/acceleration/configuration/configuration_generated.h"
 
 namespace tflite {
 namespace acceleration {

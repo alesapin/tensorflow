@@ -24,7 +24,7 @@ limitations under the License.
 #include <functional>
 #include <type_traits>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -36,8 +36,8 @@ namespace internal {
 
 template <typename Scalar>
 struct leakyrelu_op {
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE explicit leakyrelu_op(float val = 0.2f)
-      EIGEN_NO_THROW {
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE explicit leakyrelu_op(
+      float val = 0.2f) {
     m_alpha = Scalar(val);
   }
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Scalar

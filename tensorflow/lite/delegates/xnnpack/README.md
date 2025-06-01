@@ -126,6 +126,8 @@ if (interpreter->ModifyGraphWithDelegate(xnnpack_delegate) != kTfLiteOk) {
   // Report error and fall back to another delegate, or the default backend
 }
 
+// IMPORTANT: AllocateTensors can be called only AFTER ModifyGraphWithDelegate
+
 ...
 
 // Run inference using XNNPACK
@@ -202,24 +204,6 @@ XNNPACK delegate instances will be created after finalization. Hard finalization
 does not allow new instances to be created, and has lower memory overhead. Soft
 finalization allows new instances to be created, and has higher memory overhead
 (up to the size of the largest packed weights, rounded up to page alignment).
-
-### Using XNNPACK for variable operations
-
-XNNPACK can handle resource variables and associated operations: `VAR_HANDLE`,
-`READ_VARIABLE`, and `ASSIGN_VARIABLE`, but needs to be opted in by the user
-using delegate options:
-
-```c++
-TfLiteXNNPackDelegateOptions xnnpack_options =
-    TfLiteXNNPackDelegateOptionsDefault();
-xnnpack_options.handle_variable_ops = true;
-```
-
-When XNNPACK handles resource variables,
-[tflite::Subgraph::resources](https://github.com/tensorflow/tensorflow/blob/5b4239ba9cf127fd26cd9f03c04dfc4c94c078d4/tensorflow/lite/core/subgraph.h#L197)
-cannot be used to access resources, because the resources are now internal to
-XNNPACK, and the changes are not reflected in tflite::Subgraph::resources. There
-is currently no way to access resources if XNNPACK handles resource variables.
 
 ## Profiling
 When TfLite profiling is enabled, XNNPACK will time each operator and report the
@@ -462,8 +446,8 @@ Below is the list of currently supported floating-point operators:
 
 ### Floating-Point (IEEE FP16) Operators
 
-XNNPACK supports half-precision (using IEEE FP16 format) inference for a subset
-of floating-point operators. XNNPACK automatically enables half-precision
+XNNPACK supports half-precision (using IEEE FP16 format) inference for all
+floating-point operators. XNNPACK automatically enables half-precision
 inference when the following conditions are met:
 
 * XNNPACK runs on hardware that natively supports computations in IEEE FP16
@@ -472,9 +456,6 @@ ARMv8.2 FP16 arithmetics extension, and includes Android phones starting with
 Pixel 3, Galaxy S9 (Snapdragon SoC), Galaxy S10 (Exynos SoC), iOS devices with
 A11 or newer SoCs, all Apple Silicon Macs, and Windows ARM64 laptops based with
 Snapdragon 850 SoC or newer.
-
-* IEEE FP16 inference is supported for every floating-point operator in the
-model.
 
 * The model's "reduced_precision_support" metadata indicates that the model
 is compatible with FP16 inference. The metadata can be added during model
@@ -746,12 +727,37 @@ operators:
     `SIGMOID`, and `SQUARE`.
 
 Pre-trained [Fast Sparse ConvNets models](https://github.com/google-research/google-research/tree/master/fastconvnets)
-provide examples that satisfy these constrains.
+provide examples that satisfy these constraints.
 
-### Other limitations
+### Transient Indirection Buffer
 
-* Dynamically allocated (with `kTfLiteDynamic` allocation type) inputs and
-  outputs are not supported.
-* Resizing model inputs (via `Interpreter::ResizeInputTensor`) is supported, but
-  cause a complete reinitialization of the delegate instance, which has
-  considerable overhead.
+Some of XNNPACK operators, such as `CONV_2D`, use indirection buffers to supply
+locations of input for the operators. Indirection buffers are created for each
+operator instance, and are persistent by default. It causes XNNPACK to use
+substantial amount of memory, especially when the input is in high resolution.
+
+To reduce the memory footprint of indirection buffers, either build the delegate
+with `--define tflite_with_xnnpack_transient_indirection_buffer=true` option, or
+add `TFLITE_XNNPACK_DELEGATE_FLAG_TRANSIENT_INDIRECTION_BUFFER` flag to the
+`TfLiteXNNPackDelegateOptions.flags` bitmask passed into the
+`TfLiteXNNPackDelegateCreate` call:
+
+```c
+TfLiteXNNPackDelegateOptions xnnpack_options =
+    TfLiteXNNPackDelegateOptionsDefault();
+...
+xnnpack_options.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_TRANSIENT_INDIRECTION_BUFFER;
+TfLiteDelegate* xnnpack_delegate =
+    TfLiteXNNPackDelegateCreate(&xnnpack_options);
+```
+
+XNNPACK will now use the temporary memory in the workspace for indirection
+buffers. However, instead of initializing the indirection buffers once during
+the initialization of the operators, the indirection buffers will be initialized
+during every inference run.
+
+Below is the list of currently supported operators:
+
+* `CONV_2D`
+* `DEPTHWISE_CONV_2D`
+* `RESIZE_BILINEAR`

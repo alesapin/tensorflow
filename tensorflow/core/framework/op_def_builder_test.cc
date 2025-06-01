@@ -40,10 +40,10 @@ class OpDefBuilderTest : public ::testing::Test {
  protected:
   OpDefBuilder b() { return OpDefBuilder("Test"); }
 
-  void ExpectSuccess(const OpDefBuilder& builder, StringPiece proto,
+  void ExpectSuccess(const OpDefBuilder& builder, absl::string_view proto,
                      OpShapeInferenceFn* shape_fn_out = nullptr) {
     OpRegistrationData op_reg_data;
-    Status status = builder.Finalize(&op_reg_data);
+    absl::Status status = builder.Finalize(&op_reg_data);
     TF_EXPECT_OK(status);
     OpDef& op_def = op_reg_data.op_def;
     if (status.ok()) {
@@ -61,9 +61,9 @@ class OpDefBuilderTest : public ::testing::Test {
     }
   }
 
-  void ExpectOrdered(const OpDefBuilder& builder, StringPiece proto) {
+  void ExpectOrdered(const OpDefBuilder& builder, absl::string_view proto) {
     OpRegistrationData op_reg_data;
-    Status status = builder.Finalize(&op_reg_data);
+    absl::Status status = builder.Finalize(&op_reg_data);
     TF_EXPECT_OK(status);
     OpDef& op_def = op_reg_data.op_def;
     if (status.ok()) {
@@ -76,10 +76,10 @@ class OpDefBuilderTest : public ::testing::Test {
 
   void ExpectFailure(const OpDefBuilder& builder, const string& error) {
     OpRegistrationData op_reg_data;
-    Status status = builder.Finalize(&op_reg_data);
+    absl::Status status = builder.Finalize(&op_reg_data);
     EXPECT_FALSE(status.ok());
     if (!status.ok()) {
-      EXPECT_EQ(status.error_message(), error);
+      EXPECT_EQ(status.message(), error);
     }
   }
 };
@@ -617,7 +617,7 @@ TEST_F(OpDefBuilderTest, SetShapeFn) {
       "attr { name: \"dtype\" type: \"type\" allowed_values { list { } } }",
       &fn_out);
   ASSERT_TRUE(fn_out != nullptr);
-  EXPECT_EQ("ShapeFn was called", fn_out(nullptr).error_message());
+  EXPECT_EQ("ShapeFn was called", fn_out(nullptr).message());
 }
 
 TEST_F(OpDefBuilderTest, SetShapeFnCalledTwiceFailure) {

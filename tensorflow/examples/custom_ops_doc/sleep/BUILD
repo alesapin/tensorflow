@@ -13,6 +13,8 @@ tf_custom_op_library(
         "sleep_op.cc",
     ],
     deps = [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/time",
     ],
 )
@@ -45,7 +47,6 @@ tf_py_test(
     srcs_version = "PY3",
     tags = [
         "no_mac",  # TODO(b/216321151): Re-enable this test.
-        "no_pip",
     ],
     deps = [
         ":sleep_op",

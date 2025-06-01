@@ -14,8 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/tfrt/transforms/update_op_cost_in_tfrt_mlir.h"
 
+#include <cstdint>
+
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tfrt/analysis/cost_analysis.h"
+#include "tensorflow/core/tfrt/fallback/cost_recorder.h"
 
 namespace tensorflow {
 namespace tfrt_compiler {
@@ -40,7 +45,7 @@ void UpdateOpCostInTfrtMlir(mlir::ModuleOp op,
     // Set the cost attr with a new value.
     const int64_t op_key = op_key_attr.getInt();
     op->setAttr(kCostAttrName, builder.getI64IntegerAttr(
-                                   cost_recorder.GetCostNanosecond(op_key)));
+                                   cost_recorder.GetCost(op_key)));
   });
 }
 

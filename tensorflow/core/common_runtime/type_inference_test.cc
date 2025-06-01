@@ -38,7 +38,7 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-Status Rewrite(std::unique_ptr<Graph>* graph) {
+absl::Status Rewrite(std::unique_ptr<Graph>* graph) {
   FunctionLibraryDefinition flib_def((*graph)->flib_def());
   GraphOptimizationPassOptions opt_options;
   SessionOptions session_options;
@@ -386,7 +386,7 @@ TEST(TypeInferenceTest, BinaryNodeWithCycleInput) {
   // In effect, the assertion verifies that the merge node is always visited
   // at least once after both its inputs have been resolved, so the graph always
   // has complete type information.
-  EXPECT_THAT(status.error_message(),
+  EXPECT_THAT(status.message(),
               ::testing::HasSubstr("expected compatible input types"));
 }
 

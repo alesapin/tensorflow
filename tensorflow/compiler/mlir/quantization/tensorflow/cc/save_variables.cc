@@ -20,17 +20,18 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_saved_model.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/logging.h"
+#include "xla/tsl/platform/status.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/ir/importexport/convert_tensor.h"
 #include "tensorflow/core/util/tensor_bundle/tensor_bundle.h"
-#include "tensorflow/tsl/platform/env.h"
-#include "tensorflow/tsl/platform/logging.h"
-#include "tensorflow/tsl/platform/status.h"
 
 namespace tensorflow {
 namespace quantization {
@@ -67,15 +68,15 @@ absl::StatusOr<std::string> AddTensorToBundleWriter(
   }
 
   Tensor const_tensor{};
-  if (const tsl::Status status = mlir::tfg::ConvertToTensor(
+  if (const absl::Status status = mlir::tfg::ConvertToTensor(
           /*attr=*/const_op.getValue(), /*output_tensor=*/&const_tensor);
       !status.ok()) {
-    return tsl::ToAbslStatus(status);
+    return status;
   }
 
   if (!bundle_writer.Add(/*key=*/var_handle_op.getSharedName(), const_tensor)
            .ok()) {
-    return tsl::ToAbslStatus(bundle_writer.status());
+    return bundle_writer.status();
   }
 
   return var_handle_op.getSharedName().str();
@@ -97,7 +98,7 @@ absl::StatusOr<std::vector<std::string>> SaveVariablesToCheckpoint(
 
   BundleWriter bundle_writer(Env::Default(), prefix);
   if (!bundle_writer.status().ok()) {
-    return tsl::ToAbslStatus(bundle_writer.status());
+    return bundle_writer.status();
   }
 
   std::vector<std::string> saved_variable_shared_names;
@@ -122,7 +123,7 @@ absl::StatusOr<std::vector<std::string>> SaveVariablesToCheckpoint(
   }
 
   if (!bundle_writer.Finish().ok()) {
-    return tsl::ToAbslStatus(bundle_writer.status());
+    return bundle_writer.status();
   }
 
   return saved_variable_shared_names;

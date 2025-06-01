@@ -90,12 +90,12 @@ LogicalResult _XlaHostComputeMlirOp::verify() {
   if (host_module.empty()) return success();
 
   mlir::OwningOpRef<mlir::ModuleOp> module_for_func;
-  tensorflow::Status status = tensorflow::DeserializeMlirModule(
+  absl::Status status = tensorflow::DeserializeMlirModule(
       host_module.str(), op->getContext(), &module_for_func);
   if (!status.ok()) {
     return op.emitError()
            << "attribute 'host_mlir_module' can not be deserialized. "
-           << status.error_message();
+           << status.message();
   }
 
   func::FuncOp func = module_for_func->lookupSymbol<func::FuncOp>("host_func");

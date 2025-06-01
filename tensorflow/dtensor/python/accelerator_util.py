@@ -119,7 +119,9 @@ def initialize_multi_client_cluster(job_name: str,
 def initialize_accelerator_system(
     device_type: Optional[str] = None,
     enable_coordination_service: Optional[bool] = True,
+    num_logical_cpu_devices: Optional[int] = None,
     experimental_reset_context: Optional[bool] = False,
+    experimental_enable_megcore: Optional[bool] = False,
 ) -> str:
   """Initializes accelerators and communication fabrics for DTensor.
 
@@ -151,8 +153,6 @@ def initialize_accelerator_system(
       The default value is `localhost` in local mode, and
       `worker` when in the multi-client mode. All DTensor clients within the
       same multi-client cluster share the same job name.
-  - `DTENSOR_USE_PARALLEL_EXECUTOR`: string, with its value being `pw` to
-      specify that the backend is Pathways, and TensorFlow otherwise.
 
   Args:
     device_type: Type of accelerator to use, can be CPU, GPU, or TPU. If None,
@@ -160,11 +160,16 @@ def initialize_accelerator_system(
     enable_coordination_service: If true, enable distributed coordination
       service to make sure that workers know the devices on each other, when
       there is more than 1 client.
+    num_logical_cpu_devices: the number of logical CPU devices per DTensor
+      client. Default to the current number of logical CPU
+      (`dtensor.num_local_devices("CPU")`),when `device_type` is CPU, otherwise
+      set automatially to match the number of local GPU/TPU devices.
     experimental_reset_context: Reset the tensorflow context. Behaviors of
       existing TensorFlow objects (e.g. Tensors) are undefined. Set this to True
       as an escape hatch, if there is no clear way to refactor your code to call
       initialize_accelerator_system() before calling TensorFlow APIs that
       initialize the context.
+    experimental_enable_megcore: Optionally enable megcore in backend.
 
   Returns:
     device_type: the type of accelerator that was initialized.
@@ -217,10 +222,25 @@ def initialize_accelerator_system(
   # Configure logical host CPU devices for accelerators.
   if device_type in ("GPU", "TPU"):
     num_local_devices = config.num_local_devices(device_type)
-    if config.num_local_devices("CPU") < num_local_devices:
-      tf_config.set_logical_device_configuration(
-          tf_config.list_physical_devices("CPU")[0],
-          [context.LogicalDeviceConfiguration()] * num_local_devices)
+    if num_logical_cpu_devices is None:
+      num_logical_cpu_devices = max(
+          config.num_local_devices("CPU"), num_local_devices
+      )
+    else:
+      if num_logical_cpu_devices < num_local_devices:
+        raise ValueError(
+            "If set, `num_logical_cpu_devices`"
+            f" (={num_logical_cpu_devices}) must be greater than or"
+            f" equal to the number of local {device_type} devices"
+            f" (={num_local_devices})"
+        )
+
+  if num_logical_cpu_devices is not None:
+    tf_config.set_logical_device_configuration(
+        tf_config.list_physical_devices("CPU")[0],
+        [context.LogicalDeviceConfiguration()]
+        * num_logical_cpu_devices,
+    )
 
   if not config.is_local_mode():
     initialize_multi_client_cluster(
@@ -237,8 +257,8 @@ def initialize_accelerator_system(
       )._collective_use_nccl_communication = config.gpu_use_nccl_communication(
       )
 
-  if device_type == "TPU" and not config.backend_is_pw():
-    tpu_util.initialize_tpu_system()
+  if device_type == "TPU":
+    tpu_util.initialize_tpu_system(use_megacore=experimental_enable_megcore)
 
   _INITIALIZED_ACCELERATOR_SYSTEM_TYPE = device_type
 
@@ -252,24 +272,27 @@ def initialize_accelerator_system(
 def shutdown_accelerator_system() -> None:
   """Shuts down the accelerator system."""
   global _INITIALIZED_ACCELERATOR_SYSTEM_TYPE
-  context.async_wait()
+  try:
+    context.async_wait()
+  finally:
+    if not is_initialized():
+      raise ValueError(
+          "Accelerator system is not initialized. Call "
+          "tf.experimental.dtensor.initialize_accelerator_system first."
+      )
 
-  if not is_initialized():
-    raise ValueError(
-        "Accelerator system is not initialized. Call "
-        "tf.experimental.dtensor.initialize_accelerator_system first.")
+    device_type = _INITIALIZED_ACCELERATOR_SYSTEM_TYPE
 
-  device_type = _INITIALIZED_ACCELERATOR_SYSTEM_TYPE
+    if not config.is_local_mode():
+      raise ValueError(
+          "Shutting down accelerator system under multi-client mode is "
+          "not supported."
+      )
 
-  if not config.is_local_mode():
-    raise ValueError(
-        "Shutting down accelerator system under multi-client mode is "
-        "not supported.")
+    if device_type == "TPU":
+      tpu_util.shutdown_tpu_system()
 
-  if device_type == "TPU" and not config.backend_is_pw():
-    tpu_util.shutdown_tpu_system()
-
-  # reset TF context to stop gRPC servers.
-  context._reset_context()  # pylint: disable=protected-access
-  context.context()._clear_caches()  # pylint: disable=protected-access
-  _INITIALIZED_ACCELERATOR_SYSTEM_TYPE = None
+    # reset TF context to stop gRPC servers.
+    context._reset_context()  # pylint: disable=protected-access
+    context.context()._clear_caches()  # pylint: disable=protected-access
+    _INITIALIZED_ACCELERATOR_SYSTEM_TYPE = None

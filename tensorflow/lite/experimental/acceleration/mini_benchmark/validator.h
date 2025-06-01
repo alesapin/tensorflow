@@ -22,11 +22,11 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "tensorflow/lite/core/experimental/acceleration/configuration/delegate_registry.h"
+#include "tensorflow/lite/acceleration/configuration/configuration_generated.h"
+#include "tensorflow/lite/core/acceleration/configuration/delegate_registry.h"
 #include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/core/model_builder.h"
 #include "tensorflow/lite/core/subgraph.h"
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/status_codes.h"
 #include "tensorflow/lite/mutable_op_resolver.h"
 #include "tensorflow/lite/tools/model_loader.h"
@@ -93,8 +93,16 @@ class Validator {
   Validator& operator=(Validator&&) = delete;
 
  private:
+  // An opaque version of Interpreter::TfLiteDelegatePtr.
+  using TfLiteOpaqueDelegatePtr =
+      std::unique_ptr<TfLiteOpaqueDelegateStruct,
+                      void (*)(TfLiteOpaqueDelegateStruct*)>;
+
   // Load delegate plugin and create delegate.
   MinibenchmarkStatus LoadDelegate();
+
+  // Retrieves a stable delegate and creates an opaque delegate.
+  MinibenchmarkStatus LoadOpaqueDelegate();
 
   // Create the interpreter with the delegate. Must be called after
   // LoadDelegate().
@@ -107,18 +115,20 @@ class Validator {
 
   std::unique_ptr<tools::ModelLoader> model_loader_;
   const ComputeSettings* compute_settings_;
-  // Optional. Interpreter that runs on CPU.
-  std::unique_ptr<Interpreter> golden_interpreter_;
-  // Interpreter that runs with delegate enabled, using the compute settings
-  // passed to the Validator constructor.
-  std::unique_ptr<Interpreter> interpreter_;
   // Op resolver used to create the interpreters. Depending on the
   // compute_settings_, it may or may not include the default delegate.
   std::unique_ptr<::tflite::MutableOpResolver> resolver_;
   std::unique_ptr<FlatBufferModel> model_;
   ::tflite::delegates::TfLiteDelegatePtr delegate_ =
       delegates::TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
+  TfLiteOpaqueDelegatePtr opaque_delegate_ =
+      TfLiteOpaqueDelegatePtr(nullptr, [](TfLiteOpaqueDelegate*) {});
   std::unique_ptr<tflite::delegates::DelegatePluginInterface> delegate_plugin_;
+  // Optional. Interpreter that runs on CPU.
+  std::unique_ptr<Interpreter> golden_interpreter_;
+  // Interpreter that runs with delegate enabled, using the compute settings
+  // passed to the Validator constructor.
+  std::unique_ptr<Interpreter> interpreter_;
   int validation_entrypoint_index_ = -1;
   Subgraph* validation_entrypoint_ = nullptr;
   Subgraph* main_model_ = nullptr;

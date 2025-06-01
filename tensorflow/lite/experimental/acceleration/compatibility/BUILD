@@ -14,8 +14,9 @@
 # ==============================================================================
 
 load("@flatbuffers//:build_defs.bzl", "flatbuffer_android_library", "flatbuffer_cc_library", "flatbuffer_java_library")
+load("//tensorflow:strict.default.bzl", "py_strict_binary")
 load("//tensorflow/core/platform:build_config_root.bzl", "tf_gpu_tests_tags")
-load("//tensorflow/lite:special_rules.bzl", "tflite_extra_gles_deps", "tflite_portable_test_suite")
+load("//tensorflow/lite:special_rules.bzl", "gpu_compatibility_without_gl_deps_internal_visibility_allowlist", "tflite_extra_gles_deps", "tflite_portable_test_suite")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -49,8 +50,10 @@ cc_library(
     srcs = ["canonicalize_value.cc"],
     hdrs = ["canonicalize_value.h"],
     deps = [
+        ":devicedb",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
+        "@com_googlesource_code_re2//:re2",
     ],
 )
 
@@ -59,6 +62,7 @@ cc_test(
     srcs = ["canonicalize_value_test.cc"],
     deps = [
         ":canonicalize_value",
+        ":devicedb",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -102,11 +106,9 @@ genrule(
     tools = [":json_to_fb"],
 )
 
-py_binary(
+py_strict_binary(
     name = "convert_binary_to_cc_source",
     srcs = ["convert_binary_to_cc_source.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     visibility = ["//visibility:public"],
 )
 
@@ -195,8 +197,23 @@ cc_library(
 
 cc_library(
     name = "gpu_compatibility",
+    hdrs = ["gpu_compatibility.h"],
+    deps = [
+        ":android_info",
+        ":database_fbs",
+        ":devicedb_sample",
+        ":gpu_compatibility_without_gl_deps",
+        "//tensorflow/lite/delegates/gpu:delegate_options",
+        "//tensorflow/lite/delegates/gpu/common:gpu_info",
+        "@com_google_absl//absl/strings:string_view",
+    ] + tflite_extra_gles_deps(),
+)
+
+cc_library(
+    name = "gpu_compatibility_without_gl_deps",
     srcs = ["gpu_compatibility.cc"],
     hdrs = ["gpu_compatibility.h"],
+    visibility = gpu_compatibility_without_gl_deps_internal_visibility_allowlist(),
     deps = [
         ":android_info",
         ":canonicalize_value",
@@ -208,7 +225,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@flatbuffers",
-    ] + tflite_extra_gles_deps(),
+    ],
 )
 
 cc_test(

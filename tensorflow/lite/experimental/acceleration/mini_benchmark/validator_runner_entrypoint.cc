@@ -26,12 +26,11 @@ limitations under the License.
 #include <sys/types.h>
 
 #include <cstdint>
-#include <thread>  // NOLINT: only used on Android, where std::thread is allowed
 #include <utility>
 #include <vector>
 
 #include "flatbuffers/flatbuffers.h"  // from @flatbuffers
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
+#include "tensorflow/lite/acceleration/configuration/configuration_generated.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/constants.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/fb_storage.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/file_lock.h"

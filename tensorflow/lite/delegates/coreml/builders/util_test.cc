@@ -15,10 +15,12 @@ limitations under the License.
 #include "tensorflow/lite/delegates/coreml/builders/util.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/lite/core/c/common.h"
 
 using tflite::delegates::coreml::IsBinaryOpSupported;

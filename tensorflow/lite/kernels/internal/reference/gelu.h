@@ -16,10 +16,11 @@ limitations under the License.
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_GELU_H_
 
 #include <cmath>
+#include <cstdint>
 #include <functional>
 
-#include "third_party/eigen3/Eigen/Core"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "Eigen/Core"  // from @eigen_archive
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/constants.h"
 #include "tensorflow/lite/kernels/internal/types.h"
@@ -73,6 +74,15 @@ inline void Gelu(const RuntimeShape& input_shape, const T* input_data,
     output_map.array() =
         static_cast<T>(0.5) * input_map.array() *
         (input_map.array() * static_cast<T>(-M_SQRT1_2)).erfc();
+  }
+}
+
+// LookupTableInt16 is a specialized function for int16_t inputs and outputs.
+// It internally calls LUTLookup for table access.
+inline void LookupTableInt16(const int16_t* input_data, int num_elements,
+                             const int16_t* lut, int16_t* output_data) {
+  for (int i = 0; i < num_elements; ++i) {
+    output_data[i] = LUTLookup(input_data[i], lut);
   }
 }
 

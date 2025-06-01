@@ -28,7 +28,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import function as framework_function
 from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import test_ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework.constant_op import constant
@@ -45,6 +45,7 @@ from tensorflow.python.ops import functional_ops  # pylint: disable=unused-impor
 from tensorflow.python.ops import gradient_checker_v2
 from tensorflow.python.ops import gradients
 from tensorflow.python.ops import gradients_impl
+from tensorflow.python.ops import gradients_util
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import list_ops
 from tensorflow.python.ops import math_grad  # pylint: disable=unused-import
@@ -234,9 +235,9 @@ class GradientsTest(test_util.TensorFlowTestCase, parameterized.TestCase):
       z = x * 2.0
       w = z * 3.0
       grads = gradients.gradients(z, [c])
-      self.assertIsInstance(grads[0], ops.Tensor)
+      self.assertIsInstance(grads[0], tensor.Tensor)
       grads = gradients.gradients(w, [c])
-      self.assertIsInstance(grads[0], ops.Tensor)
+      self.assertIsInstance(grads[0], tensor.Tensor)
 
   def testNoGradientForStringOutputsWithOpNamespace(self):
     with ops.Graph().as_default():
@@ -254,9 +255,9 @@ class GradientsTest(test_util.TensorFlowTestCase, parameterized.TestCase):
       z = x * 2.0
       w = z * 3.0
       grads = gradients.gradients(z, [c])
-      self.assertIsInstance(grads[0], ops.Tensor)
+      self.assertIsInstance(grads[0], tensor.Tensor)
       grads = gradients.gradients(w, [c])
-      self.assertIsInstance(grads[0], ops.Tensor)
+      self.assertIsInstance(grads[0], tensor.Tensor)
 
   def testSingletonIndexedSlices(self):
     with ops.Graph().as_default():
@@ -461,6 +462,34 @@ class GradientsTest(test_util.TensorFlowTestCase, parameterized.TestCase):
         self.assertIsNotNone(output[0])
       else:
         self.assertIsNone(output[0])
+
+  def testOptimizeIdentityN(self):
+    with ops.Graph().as_default():
+      #  a    b
+      #  |    |
+      # IdentityN
+      #  |    |
+      #  c    d
+      a = constant_op.constant(1.0)
+      b = constant_op.constant(1.0)
+      c, d = array_ops.identity_n([a, b])
+
+      def OptimizedGradients(y, x):
+        return gradients_util._GradientsHelper(
+            ys=y,
+            xs=x,
+            optimize_identity_n=True,
+        )
+
+      self.assertIsNone(OptimizedGradients(d, a)[0])
+      self.assertIsNone(OptimizedGradients(c, b)[0])
+
+      self.assertIsNotNone(gradients.gradients(d, a)[0])
+      self.assertIsNotNone(gradients.gradients(c, b)[0])
+
+      for grad_impl in [gradients.gradients, OptimizedGradients]:
+        self.assertIsNotNone(grad_impl(c, a)[0])
+        self.assertIsNotNone(grad_impl(d, b)[0])
 
   @parameterized.parameters(unconnected_gradients.UnconnectedGradients.ZERO,
                             unconnected_gradients.UnconnectedGradients.NONE)
@@ -1031,7 +1060,7 @@ class GetDependentVariablesTest(test_util.TensorFlowTestCase):
   def testGetVariableByName(self):
     with context.graph_mode():
       init = constant_op.constant(100.0)
-      var = variable_scope.variable(init, name="a/replica_1")
+      var = variable_v1.VariableV1(init, name="a/replica_1")
       if isinstance(var, ref_variable.RefVariable):
         var._variable = array_ops.identity(var, name="a")
       else:
@@ -1254,6 +1283,9 @@ class CustomGradientTest(test_util.TensorFlowTestCase, parameterized.TestCase):
 
   @test_util.enable_quantized_dtypes_training
   def testCustomGradientQuantizedDtypeTraining(self):
+    # TODO(b/309175067): Remove below skipTest() when fixed.
+    if sys.platform == "darwin":
+      self.skipTest("This test fails in TF MacOS nightly and continuous builds")
     with context.eager_mode():
       @custom_gradient.custom_gradient
       def F(x):
@@ -1614,7 +1646,7 @@ class VariablesGradientTest(test_util.TensorFlowTestCase,
     self.assertAllClose(grads_re, grads)
 
     f_graph = def_function.function(
-        F, input_signature=[tensor_spec.TensorSpec(None)])
+        F, input_signature=[tensor.TensorSpec(None)])
     grads_re = self._grad(custom_gradient.recompute_grad(f_graph))(x)
     grads = self._grad(f_graph)(x)
     self.assertAllClose(grads_re, grads)
@@ -1633,8 +1665,8 @@ class VariablesGradientTest(test_util.TensorFlowTestCase,
     f_graph = def_function.function(
         F,
         input_signature=[
-            tensor_spec.TensorSpec(None, dtype=dtypes.int32),
-            tensor_spec.TensorSpec(None, dtype=dtypes.float32),
+            tensor.TensorSpec(None, dtype=dtypes.int32),
+            tensor.TensorSpec(None, dtype=dtypes.float32),
         ])
     grads_re = self._grad(custom_gradient.recompute_grad(f_graph))(x1, x2)
     grads = self._grad(f_graph)(x1, x2)
